@@ -36,11 +36,19 @@ def main():
 
     log.info("Basline: bigram probability")
     log.info("Counting bigram occurences")
+
+    #   sparsely count bigram occurences
     counts = dok_matrix((vocab_size, vocab_size), dtype='uint32')
-    for train_file_ind, train_file in enumerate(train_files):
+    for train_file_ind, train_file in enumerate(train_files[:2]):
         log.debug("Processing training file #%d", train_file_ind)
-        counts[train_file[:-1], train_file[1:]] += 1
-    count_sum = sum([(f.size - 1) for f in train_files]) + vocab_size ** 2.
+        for i1, i2 in np.nditer([train_file[:-1], train_file[1:]]):
+            counts[i1, i2] += 1
+
+    #   the total number of bigrams
+    count_sum = float(sum([(f.size - 1) for f in train_files]))
+    #   we are using +1 smoothing
+    count_sum += vocab_size ** 2.
+
     log.info("Calculating answer probabilities")
     prob = lambda s: np.prod((counts[s[:-1], s[1:]].todense() + 1) / count_sum)
     answ = lambda question: np.argmax([prob(s) for s in question])
