@@ -12,6 +12,15 @@ INTER_STRIP = "'+-*/()[]{}"
 
 
 def process_line(line, word_to_ind, ind_to_word):
+    """
+    Processes a single line of text. This implies tokenizing
+    and returning a list of token indices. Vocabulary is
+    augmented with potentionally unseen words.
+
+    :param line: A line of text.
+    :param word_to_ind: A dictionary mapping words to unique numbers.
+    :param ind_to_word: Reverse mapping of unique numbers to words.
+    """
 
     #   split line on delimiters, keep some, ditch others
     words = re.split(r"[\s\+\-\*\/\(\)\[\]\{\}]+|([,.:;!?\"]+)", line)
@@ -20,7 +29,12 @@ def process_line(line, word_to_ind, ind_to_word):
 
     #   analyze words individually
     def tokens_for_word(word):
-
+        """
+        Helper function, for a given word it returns a list
+        of tokens. Typically the list will only contain that
+        single word, but some processsing might result in multiple
+        tokens for the given input.
+        """
         #   strip interpuction we don't keep
         word = word.strip(INTER_STRIP)
 
@@ -70,6 +84,13 @@ def process_line(line, word_to_ind, ind_to_word):
 
 
 def load():
+    """
+    Loads the dataset, attempting to read it from
+    the cached location on the hard drive.
+
+    Returns the same value as the load_raw() function.
+    """
+
     file_name = "processed_data.pkl"
     file_name = os.path.join("data", file_name)
 
@@ -84,6 +105,21 @@ def load():
 
 
 def load_raw():
+    """
+    Reads the dataset (training texts and questions/answers),
+    processes them into tokens and returns the following tuple:
+    (word_to_ind, ind_to_word, train_files, questions, answers).
+
+    word_to_ind - A dictionary mapping words to unique integers.
+    ind_to_word - A list for reverse mapping on integers to words.
+    train_files - A list of numpy arrays of token indices. One
+        array for each training text.
+    questions - A list of questions. Each question is a list of
+        five numpy arrays. Each numpy array is a sequence of token
+        indices of a sentence. Only one of the sentences in the
+        question (of them five) is correct.
+    answers - A numpy array of indices of correct answers.
+    """
 
     word_to_ind = {}
     ind_to_word = []
@@ -160,6 +196,11 @@ def load_raw():
 
 
 def main():
+    """
+    Performs dataset loading / caching and prints out some
+    information about the dataset.
+    """
+
     logging.basicConfig(level=logging.INFO)
 
     word_to_ind, ind_to_word, train_files_np, questions_np, answers_np = load()
