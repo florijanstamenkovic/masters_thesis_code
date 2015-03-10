@@ -137,10 +137,9 @@ def try_pickle_dump(data, file_name, zip=None, entry_name="Data.pkl"):
         log.info('Attempting to pickle data to %s', file_name)
         if zip:
             file = ZipFile(file_name, 'w', ZIP_DEFLATED)
-            file.writestr(entry_name, pickle.dumps(data))
+            file.writestr(entry_name, pickle.dumps(data, -1))
         else:
-            pickle.dump(data, open(file_name, "wb"),
-                        protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump(data, open(file_name, "wb"), -1)
         return True
     except IOError:
         log.info('Failed to pickle data to %s', file_name)
