@@ -1,3 +1,9 @@
+"""
+Module for loading and processing the raw data of the
+Microsoft Sentence Completion Challenge (stored in the ./data/ folder).
+Utilizes the spaCy library for tokenizing and parsing text.
+"""
+
 import logging
 import os
 import numpy as np
@@ -79,6 +85,41 @@ def process_string(string, process=True):
 
 
 def load_spacy():
+    """
+    Loads the cached version of spaCy-processed data.
+    Returns the same data as load_spacy_raw().
+    """
+
+    file_name = os.path.join("data", "processed_data.pkl")
+    data = util.try_pickle_load(file_name)
+    if data is not None:
+        return data
+
+    data = load_spacy_raw()
+
+    util.try_pickle_dump(data, file_name)
+    return data
+
+
+def load_spacy_raw():
+    """
+    Loads the raw text data that constitutes the Microsoft
+    Sentence Completion Challenge (stored in ./data/).
+    Processes the data, tokenizes and parses it, and returns
+    the results.
+
+    Returned is a tuple (train_files, question_groups, answers).
+    The 'train_files' object is a list of parsed-text-tuples,
+    which will be described below. The 'question_groups' object
+    is an iterable question groups. Each group consists of 5
+    sentences (one of which is correct). Each sentence is a
+    parsed-text-tuple. The 'answers'
+    object is a numpy array of shape (question_group_count, )
+    that contains the indices of the correct sentences in
+    question groups. Finaly, the parsed-text-tuple is a tuple
+    as returned by the process_string() function. It is of
+    form (vocab_indices, head_indices, dep_type_indices).
+    """
 
     #   process questions
     log.info("Processing questions file")

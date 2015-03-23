@@ -1,3 +1,9 @@
+"""
+Module for evaluating ngram models on the Microsoft
+Sentences Completion Challenge dataset (obtained through
+the 'data' module).
+"""
+
 import logging
 import data
 import numpy as np
