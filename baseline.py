@@ -2,58 +2,80 @@ import logging
 import data
 import numpy as np
 from scipy.sparse import dok_matrix
+import multiprocessing
+from multiprocessing import Process, Queue
 
 log = logging.getLogger(__name__)
 
 
 def main():
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     log.info("Language modeling task - baselines")
 
     log.info("Loading data")
-    word_to_ind, ind_to_word, train_files, questions, answers = data.load()
-    vocab_size = len(ind_to_word)
+    train_files, question_groups, answers = data.load_spacy()
+    vocab_size = max([tf[0].max() for tf in train_files]) + 1
+    dep_type_size = max([tf[2].max() for tf in train_files]) + 1
+    log.info("Vocabulary size: %d, dependancy type size: %d",
+             vocab_size, dep_type_size)
 
     #   helper function for evaluation
     score = lambda a, b: (a == b).sum() / float(len(a))
 
-    log.info("Baseline: random selection")
-    answers2 = np.random.randint(0, 5, len(answers))
-    log.info("Random selection score: %.4f", score(answers, answers2))
+    #   helper function for n-gram eval
+    def ngram_eval(n, use_tree, use_dep_type):
+        assert n > 1 and n < 5, "Bigrams to 4-grams allowed"
 
-    # log.info("Basline: unigram probability")
-    # log.info("Counting term occurences")
-    # counts = np.zeros((vocab_size, ), dtype='uint32')
-    # for train_file_ind, train_file in enumerate(train_files):
-    #     log.debug("Processing training file #%d", train_file_ind)
-    #     counts += np.histogram(train_file, vocab_size, (0, vocab_size))[0]
-    # freq = counts / float(counts.sum())
-    # log.info("Calculating answer probabilities")
-    # prob = lambda sentence: np.prod([freq[w_ind] for w_ind in sentence])
-    # answ = lambda question: np.argmax([prob(s) for s in question])
-    # answers2 = [answ(question) for question in questions]
-    # log.info("Unigram probability score: %.4f", score(answers, answers2))
+        log.info("\nBasline: %d-grams, use_tree: %d, use_dep_type: %d",
+                 n, use_tree, use_dep_type)
+        log.info("Counting bigram occurences")
 
-    log.info("Basline: bigram probability")
-    log.info("Counting bigram occurences")
+        #   calculate the dimensions of the accumulator
+        dim1 = vocab_size ** 2
+        dim2 = vocab_size ** (n - 2)
+        if use_tree and use_dep_type:
+            dim1 *= dep_type_size ** ((n + 1) / 2)
+            dim2 *= dep_type_size if n == 4 else 1
 
-    #   sparsely count bigram occurences
-    counts = dok_matrix((vocab_size, vocab_size), dtype='uint32')
-    for train_file_ind, train_file in enumerate(train_files[:2]):
-        log.debug("Processing training file #%d", train_file_ind)
-        for i1, i2 in np.nditer([train_file[:-1], train_file[1:]]):
-            counts[i1, i2] += 1
+        #   create the accumulator
+        counts = dok_matrix((dim1, dim2), dtype='uint32')
+        log.info("Creating accumulator of shape %r", counts.shape)
 
-    #   the total number of bigrams
-    count_sum = float(sum([(f.size - 1) for f in train_files]))
-    #   we are using +1 smoothing
-    count_sum += vocab_size ** 2.
+        #   function for translating token indices to n-grams
+        def tokens_to_ngrams(tokens):
+            ngrams = data.ngrams(n, use_tree, use_dep_type, *tokens)
+            ngrams = data.reduce_ngrams(
+                ngrams, vocab_size,
+                dep_type_size if use_tree and use_dep_type else None)
+            return ngrams
 
-    log.info("Calculating answer probabilities")
-    prob = lambda s: np.prod((counts[s[:-1], s[1:]].todense() + 1) / count_sum)
-    answ = lambda question: np.argmax([prob(s) for s in question])
-    answers2 = [answ(question) for question in questions]
-    log.info("Bigram probability score: %.4f", score(answers, answers2))
+        #   go through the training files
+        for ind, train_file in enumerate(train_files):
+            log.info("Counting occurences in train file #%d", ind)
+            ngrams = tokens_to_ngrams(train_file)
+            log.info("Number of %d-grams: %d", n, ngrams.shape[0])
+
+            for ind in np.nditer(tuple(ngrams.T)):
+                counts[ind] += 1
+
+        #   the total number of ngrams with +1 smoothing
+        log.info("Calculating sum")
+        count_sum = sum(counts.itervalues()) + np.prod(counts.shape)
+        log.info("Sum is: %d", count_sum)
+
+        log.info("Calculating answer probabilities")
+        prob = lambda s: np.prod(
+            (counts[tuple(tokens_to_ngrams(s).T)] + 1) / count_sum)
+        answ = lambda q_group: np.argmax([prob(q) for q in q_group])
+        answers2 = [answ(q_group) for q_group in question_groups]
+        log.info("Bigram probability score: %.4f", score(answers, answers2))
+
+    # ngram_eval(1, False, False)
+    # ngram_eval(2, False, False)
+    # ngram_eval(3, False, False)
+    # ngram_eval(2, True, False)
+    # ngram_eval(3, True, False)
+    ngram_eval(2, True, True)
 
 
 if __name__ == "__main__":

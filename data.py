@@ -1,198 +1,263 @@
 import logging
 import os
-import re
 import numpy as np
 import util
+import re
+import spacy.en
 
 
 log = logging.getLogger(__name__)
 
-INTER_KEEP = ",.:;!?\""
-INTER_STRIP = "'+-*/()[]{}"
+#   the tokenizer / parser used
+nlp = spacy.en.English()
 
 
-def process_line(line, word_to_ind, ind_to_word):
+def preprocess_string(string, tolower=True):
     """
-    Processes a single line of text. This implies tokenizing
-    and returning a list of token indices. Vocabulary is
-    augmented with potentionally unseen words.
+    Does string preprocessing. Typically this means converting
+    multiple spaces to single spaces, digits to special number
+    tokens etc. Returns the processed string.
 
-    :param line: A line of text.
-    :param word_to_ind: A dictionary mapping words to unique numbers.
-    :param ind_to_word: Reverse mapping of unique numbers to words.
-    """
+    param string: The string to process.
 
-    #   split line on delimiters, keep some, ditch others
-    words = re.split(r"[\s\+\-\*\/\(\)\[\]\{\}]+|([,.:;!?\"]+)", line)
-    words = filter(lambda s: s is not None and len(s) > 0, words)
-    words = [w.lower() for w in words]
-
-    #   analyze words individually
-    def tokens_for_word(word):
-        """
-        Helper function, for a given word it returns a list
-        of tokens. Typically the list will only contain that
-        single word, but some processsing might result in multiple
-        tokens for the given input.
-        """
-        #   strip interpuction we don't keep
-        word = word.strip(INTER_STRIP)
-
-        if len(word) == 0:
-            return []
-
-        #   replace digits with a special token
-        word = re.sub(r"\d", "<DIG>", word)
-
-        #   handle elipses in the start
-        dot_count = 0
-        while len(word) > dot_count and word[dot_count] == '.':
-            dot_count += 1
-        if dot_count >= 2:
-            return ["<ELIPSIS>"] + tokens_for_word(word[dot_count:])
-
-        #   handle elipsis in the end
-        dot_count = 0
-        while len(word) > dot_count and word[-1 - dot_count] == '.':
-            dot_count += 1
-        if dot_count >= 2:
-            return tokens_for_word(word[:-dot_count]) + ["<ELIPSIS>"]
-
-        #   separate interpuction we do keep
-        if word[0] in INTER_KEEP:
-            return [word[0]] + tokens_for_word(word[1:])
-        if word[-1] in INTER_KEEP:
-            return tokens_for_word(word[:-1]) + [word[-1]]
-
-        return [word]
-
-    words = sum([tokens_for_word(w) for w in words], [])
-    log.debug("Tokens: %r", words)
-
-    #   translate words into indices
-    words_ind = []
-    for word in words:
-        ind = word_to_ind.get(word)
-        if ind is None:
-            ind = len(word_to_ind)
-            word_to_ind[word] = ind
-            ind_to_word.append(word)
-        words_ind.append(ind)
-
-    #   return a list of indices
-    return words_ind
-
-
-def load():
-    """
-    Loads the dataset, attempting to read it from
-    the cached location on the hard drive.
-
-    Returns the same value as the load_raw() function.
+    param tolower: If the string should be converted to lowercase.
     """
 
-    file_name = "processed_data.pkl"
-    file_name = os.path.join("data", file_name)
+    #   convert all whitespace to single spaces
+    string = re.sub(r"\s+", " ", string)
 
-    cached = util.try_pickle_load(file_name)
-    if cached is not None:
-        return cached
+    #   convert all multiple dot occurences to elipses
+    string = re.sub(r"\.\.+", "...", string)
 
-    cached = load_raw()
+    #   convert dashes and underscores to spaces
+    string = re.sub(r"[\-\_]+", " ", string)
 
-    util.try_pickle_dump(cached, file_name)
-    return cached
+    #   remove periods some common abbreviations
+    string = re.sub(r"[mM]r\.", "mr", string)
+    string = re.sub(r"[mM]rs\.", "mrs", string)
+
+    #   convert numbers to a number token
+    string = re.sub(r"[\.\,\d]*\d", "NUMBER_TOK", string)
+
+    if tolower:
+        string = string.lower()
+
+    return string
 
 
-def load_raw():
+def process_string(string, process=True):
     """
-    Reads the dataset (training texts and questions/answers),
-    processes them into tokens and returns the following tuple:
-    (word_to_ind, ind_to_word, train_files, questions, answers).
+    Helper function for processing a string.
+    First it (optionally) pre-processes the string.
+    Then it tokenizes and parses the file using spaCy.
+    Finally it extracts vocabulary indices, dependency
+    head indices and dependency type indices.
+    All are numpy arrays.
 
-    word_to_ind - A dictionary mapping words to unique integers.
-    ind_to_word - A list for reverse mapping on integers to words.
-    train_files - A list of numpy arrays of token indices. One
-        array for each training text.
-    questions - A list of questions. Each question is a list of
-        five numpy arrays. Each numpy array is a sequence of token
-        indices of a sentence. Only one of the sentences in the
-        question (of them five) is correct.
-    answers - A numpy array of indices of correct answers.
+    :param string: A string of text.
+    :return: (vocab_indices, head_indices, dep_type_indices)
     """
+    if process:
+        string = preprocess_string(string)
 
-    word_to_ind = {}
-    ind_to_word = []
+    if isinstance(string, str):
+        string = unicode(string)
+
+    log.debug("Tokenizing and parsing string")
+    tokens = nlp(string, True, True)
+    misspelling = set([t.orth_ for t in tokens if t.prob == 0.0])
+    log.debug("Misspelled words:\n\t%s", ", ".join(misspelling))
+
+    log.debug("Converting tokens to numpy arrays")
+    orth = np.array(tokens.to_array([spacy.en.attrs.ORTH]),
+                    dtype='uint32').flatten()
+    indices = dict(zip(tokens, xrange(len(tokens))))
+    head = np.array([indices[t.head] for t in tokens],
+                    dtype='uint32')
+    dep_type = np.array([t.dep for t in tokens], dtype='uint8')
+    return (orth, head, dep_type)
+
+
+def load_spacy():
 
     #   process questions
     log.info("Processing questions file")
     with open(os.path.join("data", "questions.txt")) as q_file:
-        lines = [l.strip() for l in q_file.readlines()]
+        questions = [l.strip() for l in q_file.readlines()]
 
-    #   remove question numbering from lines
-    remove_first = lambda s: s[s.find(" ") + 1:]
-    lines = [remove_first(l) for l in lines]
-    map(log.debug, lines)
+    #   remove question numbering and brackets from questions
+    questions = map(lambda s: s[s.find(" ") + 1:], questions)
+    questions = map(lambda s: re.sub(r"[\[\]]", "", s), questions)
+    map(log.debug, questions)
 
-    #   tokenize questions
-    lines = [process_line(l, word_to_ind, ind_to_word) for l in lines]
+    #   preprocess, tokenize and parse questions
+    questions = map(process_string, questions)
 
-    #   group sentences of a single question into a single numpy array
-    questions_np = []
-    for current_ind in xrange(len(lines)):
-        if (current_ind % 5) == 0:
-            question = []
-            questions_np.append(question)
-        question.append(np.array(lines[current_ind], dtype='uint32'))
+    #   group sentences of a single question into a single array
+    question_groups = [questions[i * 5: (i + 1) * 5] for
+                       i in xrange(len(questions) / 5)]
 
     #   process answers
     log.info("Processing answers file")
     with open(os.path.join("data", "answers.txt")) as q_file:
-        lines = [l.strip() for l in q_file.readlines()]
-    answers_np = np.array(
-        ["abcde".find(l[l.find(" ") - 2]) for l in lines], dtype='uint32')
+        answers = [l.strip() for l in q_file.readlines()]
+    #   translate answer choice (i.e "42b)") into indices
+    answers = map(lambda l: "abcde".find(l[l.find(" ") - 2]), answers)
+    answers = np.array(answers, dtype='uint8')
 
-    log.info("Processing training data")
-    train_dir = os.path.join("data", "trainset")
-    train_files_np = []
-    for train_file in os.listdir(train_dir):
+    def load_train_file(train_file):
+        """
+        Helper function for processing a training text file.
+        Strips away the Guttenberg stuff, concatenates lines
+        etc. Then tokenizes the data, processes it
+        using the data_from_tokens function and returns
+        the results.
+
+        :param train_file: Path to training file.
+        :return: (vocab_indices, head_indices, dep_type_indices)
+        """
+
         log.info("Processing training file %r", train_file)
 
         #   read file
-        with open(os.path.join(train_dir, train_file)) as f:
-            lines = [l.strip() for l in f.readlines()]
+        with open(os.path.join(train_dir, train_file), "rU") as f:
+            log.debug("Loading file")
+            data = f.read()
 
-        #   eliminate Guttenberg data
-        first_line = 0
-        for ind, line in enumerate(lines):
-            if line.startswith('*END*'):
-                first_line = ind + 1
-                break
-        lines = lines[first_line:-1]
+        #   eliminate Guttenberg metadata
+        data = data[data.rfind("*END*") + 5:]
+        data = data[:data.find("End of Project Gutenberg's")]
+        log.info("Training file has %d chars", len(data))
 
-        #   replace multiple newlines with a single newline
-        lines = [l for i, l in enumerate(lines) if
-                 (i == 0 or len(l) > 0 or len(lines[i - 1]) > 0)]
-        #   replace empty lines (newlines) with a special token
-        lines = [l if len(l) > 0 else "<PARAGRAPH>" for l in lines]
+        r_val = process_string(data)
+        log.info("Training file has %d tokens", r_val[0].shape[0])
+        return r_val
 
-        #   translate lines to word indices, augmenting vocabulary
-        lines_ind = [process_line(l, word_to_ind, ind_to_word) for l in lines]
-        #   prune out None lines, rare but possible
-        lines_ind = filter(lambda l: l is not None, lines_ind)
+    log.info("Processing training data")
+    train_dir = os.path.join("data", "trainset")
+    log.error("*** USING ONLY A SUBSET OF DATA")
+    train_files = map(load_train_file, os.listdir(train_dir)[:5])
 
-        #   turn all the words from file into numpy array
-        token_count = sum([len(l) for l in lines])
-        train_file_np = np.zeros((token_count, ), "uint32")
-        current_ind = 0
-        for line_ind in lines_ind:
-            for ind in line_ind:
-                train_file_np[current_ind] = ind
-                current_ind += 1
+    return train_files, question_groups, answers
 
-        train_files_np.append(train_file_np)
 
-    return word_to_ind, ind_to_word, train_files_np, questions_np, answers_np
+def ngrams(n, tree_ngram, use_deps, token_ind, parent_ind, dep_type,):
+    """
+    Converts token, head and dependeny indices into n-grams.
+    Can create dependeny-syntax-tree-based n-grams and linear
+    n-grams.
+
+    Tree-based n-grams are formed by following the tree
+    heirarchy upwards from a node. Dependency type can also be
+    inserted into the n-gram. For example, if par(x) denotes the
+    parent of 'x', and type(x) denotes the type of dependancy between
+    'x' and par(x), then a 3-gram for any given 'x' can be
+    (x, type(x), par(x), type(par(x)), par(par(x))) or
+    (x, par(x), par(par(x))) if dependency types are used or not,
+    respectively.
+
+    Linear n-grams are plain old sequence based n-grams.
+
+    :param token_ind: Token indices of a text.
+    :param parent_ind: Indices of node parents in the dependancy syntax
+        tree. If a node has no parent (is root of a sentence), then it's
+        parent_ind is the same as it's own index.
+    :param dep_type: Dependency type of a node towards it's parent.
+    :param n: Desired n-gram length.
+    :param tree_ngram: If or not n-grams should be based on the
+        dependancy tree structure.
+    :param use_deps: If or not syntactic dependancies should be
+        included in the n-gram (only applicable if tree_ngram is True).
+
+    :return: Returns a numpy array of shape (count, n_gram_depth),
+    where count is the number of resulting n-grams (depends on n),
+    and n_gram_depth is the number of n_gram parameters (depends on n
+    and if tree dependencies are used)
+    """
+
+    assert token_ind.size == parent_ind.size, \
+        "Must have the same number of token indices and head indices"
+    assert token_ind.size == dep_type.size, \
+        "Must have the same number of token indices and dependency types"
+
+    #   calculate the shape of the resulting array
+    if tree_ngram:
+        shape = (token_ind.size, (n * 2 - 1) if use_deps else n)
+    else:
+        shape = (token_ind.size - n + 1, n)
+
+    #   init array, and set first column to be n-gram[0]
+    r_val = np.zeros(shape, dtype='uint32')
+    if tree_ngram:
+        r_val[:, 0] = token_ind
+    else:
+        r_val[:, 0] = token_ind[:token_ind.size - n + 1]
+
+    #   append other n-gram info
+    for ind in xrange(1, n):
+
+        if tree_ngram:
+            if use_deps:
+                r_val[:, ind * 2 - 1] = dep_type
+                r_val[:, ind * 2] = token_ind[parent_ind]
+            else:
+                r_val[:, ind] = token_ind[parent_ind]
+
+            #   move on with the heirarchy
+            dep_type = dep_type[parent_ind]
+            parent_ind = parent_ind[parent_ind]
+
+        else:
+            r_val[:, ind] = token_ind[ind:token_ind.size - n + 1 + ind]
+
+    return r_val
+
+
+def reduce_ngrams(ngrams, vocab_size, dep_type_size=None):
+    """
+    A function for reducing the dimensionality of an ngram
+    array. Useful for representing 4-grams or 3-grams as 2-grams.
+    This function assumes that two vocabulary columns and two
+    dependency type colums can be represented as a single column
+    (meaning that vocab_size ** 2 * dep_type_size ** 2 < 2**32).
+
+    If dep_type_size param is None, it is assumed that dependency
+    types are not used, and that all columns in ngrams are vocabulary
+    indices. If it is not None, it is assumed that vocabulary indices
+    and dependency types are interleaved, starting with vocabulary
+    indices.
+
+    :param ngrams: A numpy array of ngrams.
+    :vocab_size: int defining the vocabulary size.
+    :dep_type_size: int defining the number of different dependency
+        types.
+
+    :return: An array of reduced dimensionality that is a bijected
+        translation of the original ngrams array.
+    """
+
+    #   determine the number of columns in reduced array
+    #   as well as multiplication for each column
+    if dep_type_size is None:
+        reduced_n = (ngrams.shape[1] + 1) / 2
+        mul = [1, vocab_size]
+    else:
+        reduced_n = (ngrams.shape[1] + 3) / 4
+        mul = [1, vocab_size, dep_type_size, vocab_size]
+
+    #   get cumulative multiplication per column
+    #   this is the factor we will actually used
+    cum_mul = [np.prod(mul[:i + 1]) for i in xrange(len(mul))]
+
+    r_val = np.zeros((ngrams.shape[0], reduced_n), dtype='uint32')
+
+    #   iterate through the original columns
+    #   and add it into the new array, multiplied appropriately
+    for ind in xrange(ngrams.shape[1]):
+        multiplier = cum_mul[ind % len(mul)]
+        r_val[:, ind / len(mul)] += ngrams[:, ind] * multiplier
+
+    return r_val
 
 
 def main():
@@ -201,13 +266,15 @@ def main():
     information about the dataset.
     """
 
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.DEBUG)
 
-    word_to_ind, ind_to_word, train_files_np, questions_np, answers_np = load()
-    log.info("Vocabulary length: %d", len(word_to_ind))
-    log.info("Number of works in trainset: %d", len(train_files_np))
-    log.info("Trainset word count: %d", sum([len(x) for x in train_files_np]))
-    log.info("Number of questions: %d", len(questions_np))
+    load_spacy()
+
+    # word_to_ind, ind_to_word, train_files, questions, answers_np = load()
+    # log.info("Vocabulary length: %d", len(word_to_ind))
+    # log.info("Number of works in trainset: %d", len(train_files))
+    # log.info("Trainset word count: %d", sum([len(x) for x in train_files]))
+    # log.info("Number of questions: %d", len(questions))
 
 if __name__ == "__main__":
     main()
