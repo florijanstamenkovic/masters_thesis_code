@@ -177,7 +177,7 @@ def load_spacy_raw():
     log.info("Processing training data")
     train_dir = os.path.join("data", "trainset")
     log.error("*** USING ONLY A SUBSET OF DATA")
-    train_files = map(load_train_file, os.listdir(train_dir)[:5])
+    train_files = map(load_train_file, os.listdir(train_dir)[:2])
 
     return train_files, question_groups, answers
 
@@ -250,53 +250,6 @@ def ngrams(n, tree_ngram, use_deps, token_ind, parent_ind, dep_type,):
 
         else:
             r_val[:, ind] = token_ind[ind:token_ind.size - n + 1 + ind]
-
-    return r_val
-
-
-def reduce_ngrams(ngrams, vocab_size, dep_type_size=None):
-    """
-    A function for reducing the dimensionality of an ngram
-    array. Useful for representing 4-grams or 3-grams as 2-grams.
-    This function assumes that two vocabulary columns and two
-    dependency type colums can be represented as a single column
-    (meaning that vocab_size ** 2 * dep_type_size ** 2 < 2**32).
-
-    If dep_type_size param is None, it is assumed that dependency
-    types are not used, and that all columns in ngrams are vocabulary
-    indices. If it is not None, it is assumed that vocabulary indices
-    and dependency types are interleaved, starting with vocabulary
-    indices.
-
-    :param ngrams: A numpy array of ngrams.
-    :vocab_size: int defining the vocabulary size.
-    :dep_type_size: int defining the number of different dependency
-        types.
-
-    :return: An array of reduced dimensionality that is a bijected
-        translation of the original ngrams array.
-    """
-
-    #   determine the number of columns in reduced array
-    #   as well as multiplication for each column
-    if dep_type_size is None:
-        reduced_n = (ngrams.shape[1] + 1) / 2
-        mul = [1, vocab_size]
-    else:
-        reduced_n = (ngrams.shape[1] + 3) / 4
-        mul = [1, vocab_size, dep_type_size, vocab_size]
-
-    #   get cumulative multiplication per column
-    #   this is the factor we will actually used
-    cum_mul = [np.prod(mul[:i + 1]) for i in xrange(len(mul))]
-
-    r_val = np.zeros((ngrams.shape[0], reduced_n), dtype='uint32')
-
-    #   iterate through the original columns
-    #   and add it into the new array, multiplied appropriately
-    for ind in xrange(ngrams.shape[1]):
-        multiplier = cum_mul[ind % len(mul)]
-        r_val[:, ind / len(mul)] += ngrams[:, ind] * multiplier
 
     return r_val
 

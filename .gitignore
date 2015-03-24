@@ -1,3 +1,8 @@
 *.pyc
 .DS_Store
+
+#   ingore the dataset
 data/
+
+#   ignore cached models
+ngram_models/
