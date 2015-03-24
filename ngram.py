@@ -27,6 +27,9 @@ class NgramModel():
         Can be used for file naming when storing models.
         """
 
+        if n == 1:
+            return "1-grams_%.2f-smoothing" % lmbd
+
         return "%d-grams_%s_with%s-deps_%.2f-smoothing" % (
             n, "tree" if use_tree else "linear",
             "out" if (not use_tree) or dep_type_size is None else "",
@@ -250,9 +253,9 @@ class NgramModel():
         """
 
         ngrams = self.tokens_to_ngrams(tokens)
-        counts = self.counts[tuple(ngrams.T)]
-        probs = counts / self.prob_normalizer
-        return np.prod(probs)
+        probs = map(lambda ind: self.counts[tuple(ind)], ngrams)
+        probs = map(lambda e: (e if isinstance(e, float) else e.sum()) + 1., probs)
+        return np.prod(probs) / self.prob_normalizer
 
     def description(self):
         """
@@ -285,6 +288,50 @@ class NgramModel():
         self.counts = self.counts.todok()
 
 
+class NgramCascadeModel():
+
+    @staticmethod
+    def get(n, use_tree, vocab_size, dep_type_size, lmbd, train_data,
+            weight=0.5):
+
+        models = [NgramModel.get(x, use_tree, vocab_size, dep_type_size, lmbd,
+                                 train_data) for x in xrange(n, 0, -1)]
+
+        weights = [1.0]
+        for _ in xrange(n - 1):
+            weights[-1] *= weight
+            weights.append(1 - sum(weights))
+
+        return NgramCascadeModel(models, weights)
+
+    def __init__(self, models, weights):
+        log.info("Ngram averaging, max n=%d, weights=%r", len(models), weights)
+
+        self.models = models
+        self.weights = weights
+
+    def probability(self, tokens):
+        """
+        Calculates and returns the probability of
+        a series of tokens.
+
+        :param tokens: A standard tuple of tokens:
+            (vocab_indices, head_indices, dep_type_indices)
+            as returned by 'data.process_string' function.
+        """
+        total = 0.0
+        for model, weight in zip(self.models, self.weights):
+            total += model.probability(tokens) * weight
+
+        return total
+
+    def description(self):
+        r_val = "ngram-averaging model, made of:"
+        for w, m in zip(self.weights, self.models):
+            r_val += "\n\t%.2f * %s" % (w, m.description())
+        return r_val
+
+
 def main():
     """
     Trains and evaluates a few different ngram models
@@ -306,6 +353,7 @@ def main():
 
     #   create and train a plain bigrams model with +1 smoothing
     models = [
+        NgramModel.get(1, False, vocab_size, dep_type_size, 1.0, train_files),
         NgramModel.get(2, False, vocab_size, dep_type_size, 1.0, train_files),
         NgramModel.get(3, False, vocab_size, dep_type_size, 1.0, train_files),
         NgramModel.get(4, False, vocab_size, dep_type_size, 1.0, train_files),
@@ -315,6 +363,15 @@ def main():
         NgramModel.get(2, True, vocab_size, dep_type_size, 1.0, train_files),
         NgramModel.get(3, True, vocab_size, dep_type_size, 1.0, train_files),
         NgramModel.get(4, True, vocab_size, dep_type_size, 1.0, train_files),
+    ]
+
+    models = [
+        NgramCascadeModel.get(3, False, vocab_size, dep_type_size, 1.0, train_files),
+        NgramCascadeModel.get(4, False, vocab_size, dep_type_size, 1.0, train_files),
+        NgramCascadeModel.get(3, True, vocab_size, None, 1.0, train_files),
+        NgramCascadeModel.get(4, True, vocab_size, None, 1.0, train_files),
+        NgramCascadeModel.get(3, True, vocab_size, dep_type_size, 1.0, train_files),
+        NgramCascadeModel.get(4, True, vocab_size, dep_type_size, 1.0, train_files)
     ]
 
     #   evaluation functions
