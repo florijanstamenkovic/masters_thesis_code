@@ -9,6 +9,7 @@ import os
 import numpy as np
 import util
 import re
+import codecs
 import spacy.en
 
 
@@ -161,7 +162,8 @@ def load_spacy_raw():
         log.info("Processing training file %r", train_file)
 
         #   read file
-        with open(os.path.join(train_dir, train_file), "rU") as f:
+        path = os.path.join(train_dir, train_file)
+        with codecs.open(path, "rU", "latin1") as f:
             log.debug("Loading file")
             data = f.read()
 
