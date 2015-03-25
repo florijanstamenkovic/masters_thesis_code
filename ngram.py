@@ -246,6 +246,7 @@ class NgramModel():
                 counts[ind] += 1
             count_sum += ngrams.shape[0]
 
+        log.info("Counting done, summing up")
         self.counts = counts
         self.count_sum = float(sum(counts.itervalues()))
         self.prob_normalizer = self.count_sum + \
@@ -381,21 +382,21 @@ def main():
 
     #   create different n-gram models with plain +1 smoothing
     models = [
-        # NgramModel.get(1, False, voc_len, dep_t_len, 1.0, trainset),
-        # NgramModel.get(2, False, voc_len, dep_t_len, 1.0, trainset),
-        # NgramModel.get(3, False, voc_len, dep_t_len, 1.0, trainset),
-        # NgramModel.get(4, False, voc_len, dep_t_len, 1.0, trainset),
-        # NgramModel.get(2, True, voc_len, None, 1.0, trainset),
-        # NgramModel.get(3, True, voc_len, None, 1.0, trainset),
-        # NgramModel.get(4, True, voc_len, None, 1.0, trainset),
-        # NgramModel.get(2, True, voc_len, dep_t_len, 1.0, trainset),
-        # NgramModel.get(3, True, voc_len, dep_t_len, 1.0, trainset),
-        # NgramModel.get(4, True, voc_len, dep_t_len, 1.0, trainset),
+        NgramModel.get(1, False, voc_len, dep_t_len, 1.0, trainset),
+        NgramModel.get(2, False, voc_len, dep_t_len, 1.0, trainset),
+        NgramModel.get(3, False, voc_len, dep_t_len, 1.0, trainset),
+        NgramModel.get(4, False, voc_len, dep_t_len, 1.0, trainset),
+        NgramModel.get(2, True, voc_len, None, 1.0, trainset),
+        NgramModel.get(3, True, voc_len, None, 1.0, trainset),
+        NgramModel.get(4, True, voc_len, None, 1.0, trainset),
+        NgramModel.get(2, True, voc_len, dep_t_len, 1.0, trainset),
+        NgramModel.get(3, True, voc_len, dep_t_len, 1.0, trainset),
+        NgramModel.get(4, True, voc_len, dep_t_len, 1.0, trainset),
     ]
 
     #   create averaging n-gram models
     models.extend([
-        NgramAveragingModel.get(3, False, voc_len, dep_t_len, 1.0, trainset),
+        # NgramAveragingModel.get(3, False, voc_len, dep_t_len, 1.0, trainset),
         # NgramAveragingModel.get(4, False, voc_len, dep_t_len, 1.0, trainset),
         # NgramAveragingModel.get(3, True, voc_len, None, 1.0, trainset),
         # NgramAveragingModel.get(4, True, voc_len, None, 1.0, trainset),
