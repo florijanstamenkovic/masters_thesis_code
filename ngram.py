@@ -37,6 +37,15 @@ class NgramModel():
 
     @staticmethod
     def get(n, use_tree, vocab_size, dep_type_size, lmbd, train_data):
+        """
+        Gets an ngram model for the given parameters. First attempts
+        to load a chached version of the model, if unable to load it,
+        it trains a model and stores it for later usage.
+
+        All parameters are simply passed to the NgramModel constructor,
+        except for 'train_data' which is used with 'NgramModel.train()'
+        function.
+        """
 
         #   the directory where we store cached models
         #   create it if necessary
@@ -254,7 +263,7 @@ class NgramModel():
 
         ngrams = self.tokens_to_ngrams(tokens)
         probs = map(lambda ind: self.counts[tuple(ind)], ngrams)
-        probs = map(lambda e: (e if isinstance(e, float) else e.sum()) + 1., probs)
+        probs = [(e if isinstance(e, float) else e.sum()) + 1 for e in probs]
         return np.prod(probs) / self.prob_normalizer
 
     def description(self):
@@ -288,21 +297,36 @@ class NgramModel():
         self.counts = self.counts.todok()
 
 
-class NgramCascadeModel():
+class NgramAveragingModel():
 
     @staticmethod
     def get(n, use_tree, vocab_size, dep_type_size, lmbd, train_data,
             weight=0.5):
+        """
+        Gets an averaging ngram model for the given parameters.
+        Obtains the normal (non-averaging) ngram models using
+        'NgramModel.get'.
+
+        All params except for 'weight' are passed to 'NgramModel.get'.
+        The 'weighs' param is used to calculate averaging weights.
+        If of type 'float', then the weights are calcualted in
+        so that for weights=0.6 and n=3 the weights are [0.6, 0.24, 0.16],
+        for [3-grams, 2-grams, 1-grams] respectively. If 'weights' is
+        not a 'float', it is expected to be an iterable of n floats.
+        """
 
         models = [NgramModel.get(x, use_tree, vocab_size, dep_type_size, lmbd,
                                  train_data) for x in xrange(n, 0, -1)]
 
-        weights = [1.0]
-        for _ in xrange(n - 1):
-            weights[-1] *= weight
-            weights.append(1 - sum(weights))
+        if isinstance(weight, float):
+            weights = [1.0]
+            for _ in xrange(n - 1):
+                weights[-1] *= weight
+                weights.append(1 - sum(weights))
+        else:
+            weights = weight
 
-        return NgramCascadeModel(models, weights)
+        return NgramAveragingModel(models, weights)
 
     def __init__(self, models, weights):
         log.info("Ngram averaging, max n=%d, weights=%r", len(models), weights)
@@ -326,6 +350,10 @@ class NgramCascadeModel():
         return total
 
     def description(self):
+        """
+        A textual description of the model. Uniquely describes the model,
+        but not suitable for file names due to newlines.
+        """
         r_val = "ngram-averaging model, made of:"
         for w, m in zip(self.weights, self.models):
             r_val += "\n\t%.2f * %s" % (w, m.description())
@@ -342,37 +370,38 @@ def main():
     log.info("Language modeling task - baselines")
 
     log.info("Loading data")
-    train_files, question_groups, answers = data.load_spacy()
-    vocab_size = max([tf[0].max() for tf in train_files]) + 1
-    dep_type_size = max([tf[2].max() for tf in train_files]) + 1
+    trainset, question_groups, answers = data.load_spacy()
+    voc_len = max([tf[0].max() for tf in trainset]) + 1
+    dep_t_len = max([tf[2].max() for tf in trainset]) + 1
     log.info("Vocabulary size: %d, dependancy type size: %d",
-             vocab_size, dep_type_size)
+             voc_len, dep_t_len)
 
     #   helper function for evaluationP@
     score = lambda a, b: (a == b).sum() / float(len(a))
 
-    #   create and train a plain bigrams model with +1 smoothing
+    #   create different n-gram models with plain +1 smoothing
     models = [
-        NgramModel.get(1, False, vocab_size, dep_type_size, 1.0, train_files),
-        NgramModel.get(2, False, vocab_size, dep_type_size, 1.0, train_files),
-        NgramModel.get(3, False, vocab_size, dep_type_size, 1.0, train_files),
-        NgramModel.get(4, False, vocab_size, dep_type_size, 1.0, train_files),
-        NgramModel.get(2, True, vocab_size, None, 1.0, train_files),
-        NgramModel.get(3, True, vocab_size, None, 1.0, train_files),
-        NgramModel.get(4, True, vocab_size, None, 1.0, train_files),
-        NgramModel.get(2, True, vocab_size, dep_type_size, 1.0, train_files),
-        NgramModel.get(3, True, vocab_size, dep_type_size, 1.0, train_files),
-        NgramModel.get(4, True, vocab_size, dep_type_size, 1.0, train_files),
+        # NgramModel.get(1, False, voc_len, dep_t_len, 1.0, trainset),
+        # NgramModel.get(2, False, voc_len, dep_t_len, 1.0, trainset),
+        # NgramModel.get(3, False, voc_len, dep_t_len, 1.0, trainset),
+        # NgramModel.get(4, False, voc_len, dep_t_len, 1.0, trainset),
+        # NgramModel.get(2, True, voc_len, None, 1.0, trainset),
+        # NgramModel.get(3, True, voc_len, None, 1.0, trainset),
+        # NgramModel.get(4, True, voc_len, None, 1.0, trainset),
+        # NgramModel.get(2, True, voc_len, dep_t_len, 1.0, trainset),
+        # NgramModel.get(3, True, voc_len, dep_t_len, 1.0, trainset),
+        # NgramModel.get(4, True, voc_len, dep_t_len, 1.0, trainset),
     ]
 
-    models = [
-        NgramCascadeModel.get(3, False, vocab_size, dep_type_size, 1.0, train_files),
-        NgramCascadeModel.get(4, False, vocab_size, dep_type_size, 1.0, train_files),
-        NgramCascadeModel.get(3, True, vocab_size, None, 1.0, train_files),
-        NgramCascadeModel.get(4, True, vocab_size, None, 1.0, train_files),
-        NgramCascadeModel.get(3, True, vocab_size, dep_type_size, 1.0, train_files),
-        NgramCascadeModel.get(4, True, vocab_size, dep_type_size, 1.0, train_files)
-    ]
+    #   create averaging n-gram models
+    models.extend([
+        NgramAveragingModel.get(3, False, voc_len, dep_t_len, 1.0, trainset),
+        # NgramAveragingModel.get(4, False, voc_len, dep_t_len, 1.0, trainset),
+        # NgramAveragingModel.get(3, True, voc_len, None, 1.0, trainset),
+        # NgramAveragingModel.get(4, True, voc_len, None, 1.0, trainset),
+        # NgramAveragingModel.get(3, True, voc_len, dep_t_len, 1.0, trainset),
+        # NgramAveragingModel.get(4, True, voc_len, dep_t_len, 1.0, trainset)
+    ])
 
     #   evaluation functions
     answ = lambda q_group: np.argmax([model.probability(q) for q in q_group])
