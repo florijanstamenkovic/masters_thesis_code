@@ -8,9 +8,10 @@ import logging
 import data
 import numpy as np
 import sys
+import itertools
 import os
 import util
-from scipy.sparse import dok_matrix
+from scipy.sparse import csc_matrix, coo_matrix
 # import multiprocessing
 # from multiprocessing import Process, Queue
 
@@ -18,6 +19,10 @@ log = logging.getLogger(__name__)
 
 
 class NgramModel():
+    """
+    An ngram based language model. Supports linear
+    and dependancy-syntax-based ngrams.
+    """
 
     @staticmethod
     def params_to_string(n, use_tree, dep_type_size, lmbd):
@@ -71,110 +76,77 @@ class NgramModel():
         util.try_pickle_dump(model, path)
         return model
 
-    """
-    An ngram based language model. Supports linear
-    and dependancy-syntax-based ngrams.
-    """
-
     def reduced_ngrams_mul(self):
         """
-        Calculates how an n-gram array can be reduced in
-        dimensionality. This is useful when using scipy-s
-        sparse arrays because they only support 2D arrays.
+        Calculates how an n-dimensional matrix of ngrams can be
+        falttened into a 2-dimensional matrix, so that sparse
+        matrix operations can be done. For performance benefits
+        it is desired that the second dimension is minimal, while
+        the first can not exceed 'sys.maxint'.
 
-        Calculation is based on vocab_size (because it determines
-        the maximum values for vocab indices). If dependancy
-        types are used in the ngrams, then the 'dep_type_size'
-        param should be set to the appropriate value, otherwise
-        it is assumed that all n-gram columns are vocab indices.
-
-        Returns a tuple (dim_groups, muls). The 'dim_groups'
-        object is a list of same length as the minimum possible
-        number of ngram dimensions. Each element in list is
-        another list, containing the maximum values for original
-        columns (see example). The 'muls' indicates how the
-        original colums should be multiplied when combining
-        into a reduced column. It is a lost of the same length
-        as the minimum possible number of ngram dimensions. Each
-        element in list is another list, contaning the factors of
-        multiplication for the appropriate original column.
-
-        Example: Assuming that the maximum allowed index is
-        2000, and for parameters (n=3, vocab_size=10, dep_type_size=3),
-        the result will be:
-
-        ([[20, 3, 20], [3, 20]], [[60, 3, 1], [20, 1]])
-
-        Notice that 20 * 3 * 20 = 1200 < 2000, but the next column
-        of max=3 whould result in 20*3*20*3=3600 > 2000.
+        :return: A tuple of form (shape, mapping). The 'shape'
+            part is just a tuple defining the shape of the sparse
+            matrix to be used when working with 2d-n-grams. The
+            'mapping' part is a mapping matrix of shape [2, n]
+            that can be used (dot product) to map ngrams from their
+            origina n-dimensional space to a 2D space.
         """
+
+        #   cache this because it is used often
+        if hasattr(self, '_reduced_ngrams_val'):
+            return self._reduced_ngrams_val
 
         log.debug("ngram reduction calc, n=%d, vocab=%d, dep_type=%r",
                   self.n, self.vocab_size, self.dep_type_size)
 
         #   calc the shape of the n-gram array
-        n_shape = []
-        for i in xrange(self.n):
-            if i > 0 and self.use_tree and self.dep_type_size is not None:
-                n_shape.append(self.dep_type_size)
-            n_shape.append(self.vocab_size)
+        vs, dts, n = self.vocab_size, self.dep_type_size, self.n
+        if self.use_tree and dts is not None:
+            dims = np.array((vs,) + (dts, vs) * (n - 1))
+        else:
+            dims = np.array((vs,) + (vs, ) * (n - 1))
 
-        #   group shape dimensions so that they fit
-        dim_groups = [[]]
-        dim_group = dim_groups[0]
-        for dim in n_shape:
-            if dim * np.prod([float(x) for x in dim_group]) >= sys.maxint:
-                dim_group = []
-                dim_groups.append(dim_group)
-            dim_group.append(dim)
+        #   all possible combinations of dimensions
+        combs = itertools.product((False, True), repeat=len(dims))
+        combs = map(np.array, combs)
 
-        #   calculate multipliers for each grouped column
-        def mul_from_dim(dim):
-            mul = [np.prod(dim[i + 1:]) for i in xrange(len(dim) - 1)]
-            mul.append(1)
-            return mul
-        muls = map(mul_from_dim, dim_groups)
+        def prod(it):
+            """
+            A product implementation that does not suffer
+            from overflow.
+            """
+            r_val = 1
+            for i in it:
+                r_val *= int(i)
+            return r_val
 
-        log.debug("ngram reduction calc result: (%r, %r)", dim_groups, muls)
-        return dim_groups, muls
+        #   a list of (mask, first_dim_cardinality), tuples
+        #   filter out the invalid ones (first dim too large)
+        #   and among the rest find the best
+        res = map(lambda c: (c, prod(dims[c])), combs)
+        res = filter(lambda r: r[1] < sys.maxint, res)
+        best = res[np.argmax(map(lambda t: t[1], res))][0]
 
-    def reduce_ngrams(self, ngrams):
-        """
-        A function for reducing the dimensionality of an ngram
-        array. Useful for representing 4-grams or 3-grams as 2-grams
-        due to scipy's limitation of 2D-only sparse arrays.
-        Utlizes the 'reduced_ngrams_mul' function for determening how
-        to combine columns in the reduction.
+        def mult(dims, mask):
+            """
+            Generates multiplication masks from the
+            given 'dims' array (original dimensions) and
+            'mask' (indicates which dimensions should be used).
+            """
+            r_val = np.array(dims)
+            r_val[np.logical_not(mask)] = 1
+            for i in xrange(len(dims)):
+                r_val[i] = np.prod(r_val[i + 1:])
+            r_val[np.logical_not(mask)] = 0
+            return r_val
 
-        If dep_type_size param is None, it is assumed that dependency
-        types are not used, and that all columns in ngrams are vocabulary
-        indices. If it is not None, it is assumed that vocabulary indices
-        and dependency types are interleaved, starting with vocabulary
-        indices.
+        muls = np.array([mult(dims, best), mult(dims, np.logical_not(best))])
+        shape = (prod(dims[best]), prod(dims[np.logical_not(best)]))
 
-        :param ngrams: A numpy array of ngrams. Shape is (N, dims) where
-            N is the number of ngrams (samples), and dims is the number of
-            dimensions used (for example, 3-grams without dependency types
-            have dims=3, but when with dependency types dims=5).
-        :return: An array of reduced dimensionality that is a bijected
-            translation of the original ngrams array.
-        """
-
-        #   calculate how the columns will be organized in the reduced array
-        dim_groups, multipliers = self.reduced_ngrams_mul()
-
-        #   prepare the return value array
-        r_val = np.zeros((ngrams.shape[0], len(multipliers)), dtype=int)
-
-        #   iterate through the original columns
-        #   and add it into the new array, multiplied appropriately
-        cols_done = 0
-        for ind, muls in enumerate(multipliers):
-            for mul in muls:
-                r_val[:, ind] += mul * ngrams[:, cols_done]
-                cols_done += 1
-
-        return r_val
+        log.debug("ngram reduction calc shape: %r, and multiplies: %r",
+                  shape, muls)
+        self._reduced_ngrams_val = (shape, muls)
+        return (shape, muls)
 
     def __init__(self, n, use_tree, vocab_size, dep_type_size=None, lmbd=0.0):
         """
@@ -208,7 +180,10 @@ class NgramModel():
         """
         ngrams = data.ngrams(self.n, self.use_tree,
                              self.dep_type_size is not None, *tokens)
-        return self.reduce_ngrams(ngrams)
+
+        #   reduce ngrams to two dimensions (for sparse matrices to handle)
+        _, multipliers = self.reduced_ngrams_mul()
+        return np.dot(ngrams, multipliers.T)
 
     def train(self, train_texts):
         """
@@ -225,30 +200,28 @@ class NgramModel():
 
         log.info("Training %d-gram model", self.n)
 
-        #   calculate the dimensions of the accumulator
-        dim_groups, _ = self.reduced_ngrams_mul()
+        #   calculate the shape of the accumulator
+        cnt_shape, _ = self.reduced_ngrams_mul()
 
         #   create the accumulator
-        count_shape = tuple([np.prod(g) for g in dim_groups])
-        if len(count_shape) == 1:
-            count_shape += (1,)
-        counts = dok_matrix(count_shape, dtype='uint32')
+        counts = csc_matrix(cnt_shape, dtype='uint32')
         log.info("Creating accumulator of shape %r", counts.shape)
-        count_sum = 0
 
         #   go through the training files
         for ind, train_file in enumerate(train_texts):
             log.info("Counting occurences in train text #%d", ind)
             ngrams = self.tokens_to_ngrams(train_file)
-            log.info("Number of %d-grams: %d", self.n, ngrams.shape[0])
+            log.info("%d-grams shape: %d", self.n, ngrams.shape[0])
+            assert ngrams.ndim == 2, "Only 2D n-gram matrix allowed"
 
-            for ind in np.nditer(tuple(ngrams.T)):
-                counts[ind] += 1
-            count_sum += ngrams.shape[0]
+            #   count ngrams
+            data = (np.ones(ngrams.shape[0]))
+            counts += coo_matrix(
+                (data, (ngrams[:, 0], ngrams[:, 1])), shape=cnt_shape).tocsc()
 
         log.info("Counting done, summing up")
         self.counts = counts
-        self.count_sum = float(sum(counts.itervalues()))
+        self.count_sum = counts.sum()
         self.prob_normalizer = self.count_sum + \
             self.lmbd * np.prod(map(float, counts.shape))
 
@@ -275,30 +248,12 @@ class NgramModel():
         return NgramModel.params_to_string(
             self.n, self.use_tree, self.dep_type_size, self.lmbd)
 
-    def __getstate__(self):
-        """
-        Overriding pickling because scipy.sparse.DOK does not
-        unpickle well, so we convert to COO. We need to keep
-        the DOK in our objects because it supports more indexing
-        options then COO. Scipy.sparse seems a bit crappy.
-        """
-        state = dict()
-        state.update(self.__dict__)
-        state["counts"] = self.counts.tocoo()
-        return state
-
-    def __setstate__(self, state):
-        """
-        Overriding pickling because scipy.sparse.DOK does not
-        unpickle well, so we convert to COO. We need to keep
-        the DOK in our objects because it supports more indexing
-        options then COO. Scipy.sparse seems a bit crappy.
-        """
-        self.__dict__.update(state)
-        self.counts = self.counts.todok()
-
 
 class NgramAveragingModel():
+    """
+    A model that averages n, (n-1), ... , 1 gram probabilities
+    of a given sequences. Averaging is weighted.
+    """
 
     @staticmethod
     def get(n, use_tree, vocab_size, dep_type_size, lmbd, train_data,
