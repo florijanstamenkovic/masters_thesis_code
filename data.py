@@ -178,8 +178,7 @@ def load_spacy_raw():
 
     log.info("Processing training data")
     train_dir = os.path.join("data", "trainset")
-    log.error("*** USING ONLY A SUBSET OF DATA")
-    train_files = map(load_train_file, os.listdir(train_dir)[:2])
+    train_files = map(load_train_file, os.listdir(train_dir))
 
     return train_files, question_groups, answers
 
@@ -264,13 +263,10 @@ def main():
 
     logging.basicConfig(level=logging.DEBUG)
 
-    load_spacy()
-
-    # word_to_ind, ind_to_word, train_files, questions, answers_np = load()
-    # log.info("Vocabulary length: %d", len(word_to_ind))
-    # log.info("Number of works in trainset: %d", len(train_files))
-    # log.info("Trainset word count: %d", sum([len(x) for x in train_files]))
-    # log.info("Number of questions: %d", len(questions))
+    train_files, questions, answers = load_spacy()
+    log.info("Number of works in trainset: %d", len(train_files))
+    log.info("Trainset token count: %d", sum([len(x[0]) for x in train_files]))
+    log.info("Number of questions: %d", len(questions))
 
 if __name__ == "__main__":
     main()

@@ -249,7 +249,7 @@ class NgramModel():
             self.n, self.use_tree, self.dep_type_size, self.lmbd)
 
 
-class NgramAveragingModel():
+class NgramAvgModel():
     """
     A model that averages n, (n-1), ... , 1 gram probabilities
     of a given sequences. Averaging is weighted.
@@ -282,7 +282,7 @@ class NgramAveragingModel():
         else:
             weights = weight
 
-        return NgramAveragingModel(models, weights)
+        return NgramAvgModel(models, weights)
 
     def __init__(self, models, weights):
         log.info("Ngram averaging, max n=%d, weights=%r", len(models), weights)
@@ -350,21 +350,23 @@ def main():
     ]
 
     #   create averaging n-gram models
-    models.extend([
-        # NgramAveragingModel.get(3, False, voc_len, dep_t_len, 1.0, trainset),
-        # NgramAveragingModel.get(4, False, voc_len, dep_t_len, 1.0, trainset),
-        # NgramAveragingModel.get(3, True, voc_len, None, 1.0, trainset),
-        # NgramAveragingModel.get(4, True, voc_len, None, 1.0, trainset),
-        # NgramAveragingModel.get(3, True, voc_len, dep_t_len, 1.0, trainset),
-        # NgramAveragingModel.get(4, True, voc_len, dep_t_len, 1.0, trainset)
-    ])
+    if '-a' in sys.argv:
+        models.extend([
+            NgramAvgModel.get(3, False, voc_len, dep_t_len, 1.0, trainset),
+            NgramAvgModel.get(4, False, voc_len, dep_t_len, 1.0, trainset),
+            NgramAvgModel.get(3, True, voc_len, None, 1.0, trainset),
+            NgramAvgModel.get(4, True, voc_len, None, 1.0, trainset),
+            NgramAvgModel.get(3, True, voc_len, dep_t_len, 1.0, trainset),
+            NgramAvgModel.get(4, True, voc_len, dep_t_len, 1.0, trainset)
+        ])
 
-    #   evaluation functions
-    answ = lambda q_group: np.argmax([model.probability(q) for q in q_group])
-    for model in models:
-        answers2 = [answ(q_group) for q_group in question_groups]
-        log.info("Model: %s, score: %.4f", model.description(),
-                 score(answers, answers2))
+    #   evaluation of ngram models
+    if '-e' in sys.argv:
+        answ = lambda q_g: np.argmax([model.probability(q) for q in q_g])
+        for model in models:
+            answers2 = [answ(q_g) for q_g in question_groups]
+            log.info("Model: %s, score: %.4f", model.description(),
+                     score(answers, answers2))
 
 
 if __name__ == "__main__":
