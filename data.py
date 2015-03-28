@@ -198,7 +198,12 @@ def ngrams(n, tree_ngram, use_deps, token_ind, parent_ind, dep_type,):
     (x, par(x), par(par(x))) if dependency types are used or not,
     respectively.
 
-    Linear n-grams are plain old sequence based n-grams.
+    Linear n-grams are plain old sequence based n-grams, organized
+    backwards, so that for a sentence "a b c", the resulting bigrams
+    would be [(b, a), (c, b)]. This organization is consistent with
+    syntax-tree ngrams in the sense that the conditioned term is
+    the 0-th element in the ngram, followed by it's closest conditioning
+    term, and so forth.
 
     :param token_ind: Token indices of a text.
     :param parent_ind: Indices of node parents in the dependancy syntax
@@ -212,9 +217,11 @@ def ngrams(n, tree_ngram, use_deps, token_ind, parent_ind, dep_type,):
         included in the n-gram (only applicable if tree_ngram is True).
 
     :return: Returns a numpy array of shape (count, n_gram_depth),
-    where count is the number of resulting n-grams (depends on n),
-    and n_gram_depth is the number of n_gram parameters (depends on n
-    and if tree dependencies are used)
+        where count is the number of resulting n-grams (depends on n),
+        and n_gram_depth is the number of n_gram parameters (depends on n
+        and if tree dependencies are used). Note that the 0-th column
+        in the array is the conditioned term, 1-st colum is it's closest
+        conditioning term, and so forth.
     """
 
     assert token_ind.size == parent_ind.size, \
@@ -233,7 +240,7 @@ def ngrams(n, tree_ngram, use_deps, token_ind, parent_ind, dep_type,):
     if tree_ngram:
         r_val[:, 0] = token_ind
     else:
-        r_val[:, 0] = token_ind[:token_ind.size - n + 1]
+        r_val[:, -1] = token_ind[:token_ind.size - n + 1]
 
     #   append other n-gram info
     for ind in xrange(1, n):
@@ -250,7 +257,7 @@ def ngrams(n, tree_ngram, use_deps, token_ind, parent_ind, dep_type,):
             parent_ind = parent_ind[parent_ind]
 
         else:
-            r_val[:, ind] = token_ind[ind:token_ind.size - n + 1 + ind]
+            r_val[:, -1 - ind] = token_ind[ind:token_ind.size - n + 1 + ind]
 
     return r_val
 

@@ -332,7 +332,7 @@ def main():
     log.info("Vocabulary size: %d, dependancy type size: %d",
              voc_len, dep_t_len)
 
-    #   helper function for evaluationP@
+    #   helper function for evaluation
     score = lambda a, b: (a == b).sum() / float(len(a))
 
     #   create different n-gram models with plain +1 smoothing
