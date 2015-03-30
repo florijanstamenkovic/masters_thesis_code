@@ -345,8 +345,8 @@ def main():
 
     #   get the data handling parameters
     ts_reduction = util.argv('-s', None, int)
-    min_occur = util.argv('-o', 0, int)
-    min_files = util.argv('-f', 0, int)
+    min_occur = util.argv('-o', 1, int)
+    min_files = util.argv('-f', 1, int)
 
     log.info("Loading data")
     trainset, question_groups, answers = data.load_spacy(

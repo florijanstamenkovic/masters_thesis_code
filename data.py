@@ -363,8 +363,8 @@ def main():
 
     train_files, questions, answers = load_spacy(
         util.argv('-s', None, int),
-        util.argv('-o', 0, int),
-        util.argv('-f', 0, int)
+        util.argv('-o', 1, int),
+        util.argv('-f', 1, int)
     )
 
     log.info("Number of works in trainset: %d", len(train_files))
