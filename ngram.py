@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 
 
 class NgramModel():
+
     """
     An ngram based language model. Supports linear
     and dependancy-syntax-based ngrams.
@@ -41,7 +42,8 @@ class NgramModel():
             lmbd)
 
     @staticmethod
-    def get(n, use_tree, vocab_size, dep_type_size, lmbd, train_data):
+    def get(n, use_tree, vocab_size, dep_type_size, lmbd,
+            train_data, path=None):
         """
         Gets an ngram model for the given parameters. First attempts
         to load a chached version of the model, if unable to load it,
@@ -49,12 +51,14 @@ class NgramModel():
 
         All parameters are simply passed to the NgramModel constructor,
         except for 'train_data' which is used with 'NgramModel.train()'
-        function.
+        function, and 'path' which allows for overriding the default
+        storage dir for model caching.
         """
 
         #   the directory where we store cached models
         #   create it if necessary
-        path = 'ngram_models'
+        if path is None:
+            path = 'ngram_models'
         if not os.path.exists(path):
             os.makedirs(path)
 
@@ -120,12 +124,14 @@ class NgramModel():
                 r_val *= int(i)
             return r_val
 
-        #   a list of (mask, first_dim_cardinality), tuples
+        #   a list of (mask, (shape)), tuples
+        res = map(lambda c: (c, (prod(dims[c]),
+                                 prod(dims[np.logical_not(c)]))), combs)
         #   filter out the invalid ones (first dim too large)
-        #   and among the rest find the best
-        res = map(lambda c: (c, prod(dims[c])), combs)
-        res = filter(lambda r: r[1] < sys.maxint, res)
-        best = res[np.argmax(map(lambda t: t[1], res))][0]
+        res = filter(lambda r: r[1][0] < sys.maxint, res)
+        #   the best mask has a large second dimension (for sparse-csc speed),
+        #   but not too large (for storage optimization)
+        best = res[np.argmin(map(lambda t: abs(t[1][1] - 1e8), res))][0]
 
         def mult(dims, mask):
             """
@@ -179,7 +185,8 @@ class NgramModel():
         numpy array.
         """
         ngrams = data.ngrams(self.n, self.use_tree,
-                             self.dep_type_size is not None, *tokens)
+                             self.dep_type_size is not None, *tokens,
+                             invalid_tokens=[self.vocab_size - 1])
 
         #   reduce ngrams to two dimensions (for sparse matrices to handle)
         _, multipliers = self.reduced_ngrams_mul()
@@ -205,13 +212,14 @@ class NgramModel():
 
         #   create the accumulator
         counts = csc_matrix(cnt_shape, dtype='uint32')
-        log.info("Creating accumulator of shape %r", counts.shape)
+        log.info("Creating accumulator of shape %r, counting occurences",
+                 counts.shape)
 
         #   go through the training files
         for ind, train_file in enumerate(train_texts):
-            log.info("Counting occurences in train text #%d", ind)
+            log.debug("Counting occurences in train text #%d", ind)
             ngrams = self.tokens_to_ngrams(train_file)
-            log.info("%d-grams shape: %d", self.n, ngrams.shape[0])
+            log.debug("%d-grams shape: %d", self.n, ngrams.shape[0])
             assert ngrams.ndim == 2, "Only 2D n-gram matrix allowed"
 
             #   count ngrams
@@ -250,6 +258,7 @@ class NgramModel():
 
 
 class NgramAvgModel():
+
     """
     A model that averages n, (n-1), ... , 1 gram probabilities
     of a given sequences. Averaging is weighted.
@@ -320,50 +329,86 @@ def main():
     """
     Trains and evaluates a few different ngram models
     on the Microsoft Sentence Completion Challenge.
+
+    Allowed cmd-line flags:
+        -a : Also use averaging ngram models.
+        -e : Do model evaluation (as opposed to just counting them)
+        -s TS_FILES : Uses the reduced trainsed (TS_FILES trainset files)
+        -o MIN_OCCUR : Only uses terms that occur MIN_OCCUR or more times
+            in the trainset. Other terms are replaced with a special token.
+        -f MIN_FILES : Only uses terms that occur in MIN_FILES or more files
+            in the trainset. Other terms are replaced with a special token.
     """
 
     logging.basicConfig(level=logging.INFO)
     log.info("Language modeling task - baselines")
 
-    log.info("Loading data")
-    trainset, question_groups, answers = data.load_spacy()
-    voc_len = max([tf[0].max() for tf in trainset]) + 1
-    dep_t_len = max([tf[2].max() for tf in trainset]) + 1
-    log.info("Vocabulary size: %d, dependancy type size: %d",
-             voc_len, dep_t_len)
+    #   get the data handling parameters
+    ts_reduction = util.argv('-s', None, int)
+    min_occur = util.argv('-o', 0, int)
+    min_files = util.argv('-f', 0, int)
 
-    #   helper function for evaluation
-    score = lambda a, b: (a == b).sum() / float(len(a))
+    log.info("Loading data")
+    trainset, question_groups, answers = data.load_spacy(
+        ts_reduction, min_occur, min_files)
+
+    #   get some info about the data
+    v_size = max([tf[0].max() for tf in trainset]) + 1
+    dt_size = max([tf[2].max() for tf in trainset]) + 1
+    log.info("Vocabulary size: %d, dependancy type size: %d", v_size, dt_size)
+
+    #   folder where the ngram models are cached
+    #   it is specific to data handling parameters
+    path = os.path.join(
+        'ngram_models', 'subset_%d-min_occ_%d-min_files_%d' % (
+            ts_reduction, min_occur, min_files))
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+    #   log the loading process also to a file
+    log_name = os.path.join(path, "info.log")
+    log.addHandler(logging.FileHandler(log_name))
 
     #   create different n-gram models with plain +1 smoothing
-    models = [
-        NgramModel.get(1, False, voc_len, dep_t_len, 1.0, trainset),
-        NgramModel.get(2, False, voc_len, dep_t_len, 1.0, trainset),
-        NgramModel.get(3, False, voc_len, dep_t_len, 1.0, trainset),
-        NgramModel.get(4, False, voc_len, dep_t_len, 1.0, trainset),
-        NgramModel.get(2, True, voc_len, None, 1.0, trainset),
-        NgramModel.get(3, True, voc_len, None, 1.0, trainset),
-        NgramModel.get(4, True, voc_len, None, 1.0, trainset),
-        NgramModel.get(2, True, voc_len, dep_t_len, 1.0, trainset),
-        NgramModel.get(3, True, voc_len, dep_t_len, 1.0, trainset),
-        NgramModel.get(4, True, voc_len, dep_t_len, 1.0, trainset),
+    params = [
+        (NgramModel, 1, False, v_size, dt_size, 1.0, trainset, path),
+        (NgramModel, 2, False, v_size, dt_size, 1.0, trainset, path),
+        (NgramModel, 3, False, v_size, dt_size, 1.0, trainset, path),
+        (NgramModel, 4, False, v_size, dt_size, 1.0, trainset, path),
+        (NgramModel, 2, True, v_size, None, 1.0, trainset, path),
+        (NgramModel, 3, True, v_size, None, 1.0, trainset, path),
+        (NgramModel, 4, True, v_size, None, 1.0, trainset, path),
+        (NgramModel, 2, True, v_size, dt_size, 1.0, trainset, path),
+        (NgramModel, 3, True, v_size, dt_size, 1.0, trainset, path),
+        (NgramModel, 4, True, v_size, dt_size, 1.0, trainset, path),
     ]
 
     #   create averaging n-gram models
     if '-a' in sys.argv:
-        models.extend([
-            NgramAvgModel.get(3, False, voc_len, dep_t_len, 1.0, trainset),
-            NgramAvgModel.get(4, False, voc_len, dep_t_len, 1.0, trainset),
-            NgramAvgModel.get(3, True, voc_len, None, 1.0, trainset),
-            NgramAvgModel.get(4, True, voc_len, None, 1.0, trainset),
-            NgramAvgModel.get(3, True, voc_len, dep_t_len, 1.0, trainset),
-            NgramAvgModel.get(4, True, voc_len, dep_t_len, 1.0, trainset)
+        params.extend([
+            (NgramAvgModel, 3, False, v_size, dt_size, 1.0, trainset, path),
+            (NgramAvgModel, 4, False, v_size, dt_size, 1.0, trainset, path),
+            (NgramAvgModel, 3, True, v_size, None, 1.0, trainset, path),
+            (NgramAvgModel, 4, True, v_size, None, 1.0, trainset, path),
+            (NgramAvgModel, 3, True, v_size, dt_size, 1.0, trainset, path),
+            (NgramAvgModel, 4, True, v_size, dt_size, 1.0, trainset, path)
         ])
+
+    #   create the models
+    for p in params:
+        p[0].get(*p[1:])
 
     #   evaluation of ngram models
     if '-e' in sys.argv:
+        log.info("Evaluating ngram models")
+
+        #   helper function for evaluation
+        score = lambda a, b: (a == b).sum() / float(len(a))
+
+        #   function for getting the answer index (max-a-posteriori)
         answ = lambda q_g: np.argmax([model.probability(q) for q in q_g])
-        for model in models:
+        for p in params:
+            model = p[0].get(*p[1:])
             answers2 = [answ(q_g) for q_g in question_groups]
             log.info("Model: %s, score: %.4f", model.description(),
                      score(answers, answers2))

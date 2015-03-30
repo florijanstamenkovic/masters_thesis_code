@@ -1,10 +1,7 @@
-"""
-Utilities for the Deep-Belief-Net Theano implementation.
-"""
-
 import logging
 import math
 import numpy as np
+import sys
 from zipfile import ZipFile, ZIP_DEFLATED
 from io import BytesIO
 import cPickle as pickle
@@ -13,6 +10,28 @@ from time import time
 from datetime import date
 
 log = logging.getLogger(__name__)
+
+
+def argv(flag, default=None, formatter=None):
+    """
+    Looks for a program argument flag in sys.argv and
+    returns it's value. If flag is not present, the
+    default value is returned.
+
+    :param flag: A string flat, for example '-a'.
+    :param default: Value that is returned if the flag
+        is not present in sys.argv.
+    :param formatter: The formatter to be used on the
+        value if present. If no formatter is given,
+        value is returned in it's original form.
+    """
+    if flag not in sys.argv:
+        return default
+
+    value = sys.argv[sys.argv.index(flag) + 1]
+    if formatter is not None:
+        value = formatter(value)
+    return value
 
 
 def create_minibatches(x, y, size, shuffle=True):
