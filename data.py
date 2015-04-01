@@ -57,12 +57,15 @@ def process_string(string, process=True):
     Helper function for processing a string.
     First it (optionally) pre-processes the string.
     Then it tokenizes and parses the file using spaCy.
-    Finally it extracts vocabulary indices, dependency
-    head indices and dependency type indices.
+    Finally it extracts vocabulary indices (orth),
+    lemma indices (lemm), part of speech indices (pos),
+    detailed part of speech tag indices (tag),
+    syntax to-parent-dependency type indices (dep) and
+    dependency head indices (head).
     All are numpy arrays.
 
     :param string: A string of text.
-    :return: (vocab_indices, head_indices, dep_type_indices)
+    :return: (orth, lemm, pos, tag, dep_type, head)
     """
     if process:
         string = preprocess_string(string)
@@ -77,31 +80,44 @@ def process_string(string, process=True):
 
     orth = np.array(tokens.to_array([spacy.en.attrs.ORTH]),
                     dtype='uint32').flatten()
+    lemm = np.array(tokens.to_array([spacy.en.attrs.LEMMA]),
+                    dtype='uint32').flatten()
+    pos = np.array(tokens.to_array([spacy.en.attrs.POS]),
+                   dtype='uint8').flatten()
+    tag = np.array(tokens.to_array([spacy.en.attrs.TAG]),
+                   dtype='uint8').flatten()
+    dep_type = np.array([t.dep for t in tokens], dtype='uint8')
+
+    #   convert head references to indices
     indices = dict(zip(tokens, xrange(len(tokens))))
     head = np.array([indices[t.head] for t in tokens],
                     dtype='uint32')
-    dep_type = np.array([t.dep for t in tokens], dtype='uint8')
-    return (orth, head, dep_type)
+
+    return (orth, lemm, pos, tag, dep_type, head)
 
 
-def load_spacy(subset=None, min_occ=0, min_files=0):
+def load_spacy(subset=None, min_occ=1, min_files=1):
     """
     Loads the cached version of spaCy-processed data.
-    Returns the same data as load_spacy_raw().
+    Accepts the same parameters and returns the same
+    data as load_spacy_raw().
     """
 
-    name_base = "processed_data-subset_%r-min_occ_%r-min_files_%r" % (
+    dir = os.path.join("data", "processed")
+    if not os.path.exists(dir):
+            os.makedirs(dir)
+    name_base = "subset_%r-min_occ_%r-min_files_%r" % (
         subset, min_occ, min_files)
 
     #   look for the cached processed data, return if present
-    file_name = os.path.join("data", name_base + ".pkl")
+    file_name = os.path.join(dir, name_base + ".pkl")
     data = util.try_pickle_load(file_name)
     if data is not None:
         return data
 
     #   did not find cached data, will have to process it
     #   log the loading process also to a file
-    log_name = os.path.join("data", name_base + ".log")
+    log_name = os.path.join(dir, name_base + ".log")
     log.addHandler(logging.FileHandler(log_name))
 
     #   process the data, cache it and return
@@ -110,7 +126,7 @@ def load_spacy(subset=None, min_occ=0, min_files=0):
     return data
 
 
-def load_spacy_raw(subset, min_occ, min_files):
+def load_spacy_raw(subset, min_occ=1, min_files=1):
     """
     Loads the raw text data that constitutes the Microsoft
     Sentence Completion Challenge (stored in ./data/).
@@ -126,8 +142,15 @@ def load_spacy_raw(subset, min_occ, min_files):
     object is a numpy array of shape (question_group_count, )
     that contains the indices of the correct sentences in
     question groups. Finaly, the parsed-text-tuple is a tuple
-    as returned by the process_string() function. It is of
-    form (vocab_indices, head_indices, dep_type_indices).
+    as returned by the process_string() function.
+
+    :param subset: The number of training files to process.
+        If None (default), all of the files are processed.
+    :param min_occ: Miniumum required number of occurences of
+        a token (word) required for it to be included in the vocabulary.
+        Default value (1) uses all words that occured in the trainset.
+    :param min_files: Minumu required number of files a term has to
+        occur in for it to be included in the vocabulary.
     """
 
     log.info("Processing data, trainset subset size :%r, minimum %r"
@@ -198,43 +221,58 @@ def load_spacy_raw(subset, min_occ, min_files):
         log.info("Reducing vocabulary, required min %d term occurences "
                  "across min %d files", min_occ, min_files)
 
-        #   occurence counters
+        #   occurence counters for terms and lemmas
         voc_len = max([tf[0].max() for tf in train_files]) + 1
-        occ_count = np.zeros(voc_len, dtype='uint32')
-        file_count = np.zeros(voc_len, dtype='uint32')
+        lem_len = max([tf[1].max() for tf in train_files]) + 1
+        voc_count = np.zeros(voc_len, dtype='uint32')
+        lem_count = np.zeros(lem_len, dtype='uint32')
+        file_voc_count = np.zeros(voc_len, dtype='uint32')
+        file_lem_count = np.zeros(lem_len, dtype='uint32')
 
-        def count(inds):
+        def count(voc, lem):
             """
-            Counts occurences of vocabulary indices in 'inds' and
-            adds that count to the total count 'occ_count'. Also
-            adds a +1 count to 'file_count' for all vocabulary indices
-            in 'inds'.
+            Counts occurences of vocabulary indices in 'voc' and
+            adds that count to the total count 'voc_count'. Does
+            the same for lemmas. Also adds a +1 count to 'file_voc_count'
+            for all vocabulary indices in 'inds'.
             """
-            inds_count = np.histogram(inds, voc_len, (-0.5, voc_len - 0.5))[0]
-            occ_count.__iadd__(inds_count)
-            file_count[inds] += 1
+            _voc_count = np.histogram(voc, voc_len, (-0.5, voc_len - 0.5))[0]
+            voc_count.__iadd__(_voc_count)
+
+            _lem_count = np.histogram(lem, lem_len, (-0.5, lem_len - 0.5))[0]
+            lem_count.__iadd__(_lem_count)
+
+            file_voc_count[voc] += 1
+            file_lem_count[lem] += 1
 
         #   count occurences in train files
-        map(count, [tf[0] for tf in train_files])
+        map(count, [tf[0] for tf in train_files],
+            [tf[1] for tf in train_files])
 
-        #   term indices that should be kept
-        inds_to_keep = np.arange(voc_len, )[
-            np.logical_and(occ_count >= min_occ, file_count >= min_files)]
-        new_voc_len = inds_to_keep.size
-        log.info("New vocabulary size: %d", new_voc_len)
+        #   term and lemma indices that should be kept
+        voc_to_keep = np.arange(voc_len, )[
+            np.logical_and(voc_count >= min_occ, file_voc_count >= min_files)]
+        lem_to_keep = np.arange(lem_len, )[
+            np.logical_and(lem_count >= min_occ, file_lem_count >= min_files)]
+        new_voc_len = voc_to_keep.size
+        new_lem_len = lem_to_keep.size
+        log.info("New vocab len: %d, lemma len: %d", new_voc_len, new_lem_len)
         log.info("Tokens kept: %.2f",
-                 float(occ_count[inds_to_keep].sum()) / float(occ_count.sum()))
+                 float(voc_count[voc_to_keep].sum()) / float(voc_count.sum()))
 
-        #   data structure that helps with vocab conversion
-        old_to_new_vocab = np.ones((voc_len, ), dtype='uint32') * new_voc_len
-        old_to_new_vocab[inds_to_keep] = np.arange(inds_to_keep.size, )
+        #   data structure for vocab and lemma conversion
+        old_to_new_voc = np.ones((voc_len, ), dtype='uint32') * new_voc_len
+        old_to_new_voc[voc_to_keep] = np.arange(voc_to_keep.size, )
+        old_to_new_lem = np.ones((lem_len, ), dtype='uint32') * new_lem_len
+        old_to_new_lem[lem_to_keep] = np.arange(lem_to_keep.size, )
 
         log.info("Converting trainset and questions to new vocabulary")
 
-        def convert(nda):
-            nda[:] = old_to_new_vocab[nda]
-        map(convert, [tf[0] for tf in train_files])
-        map(convert, [q[0] for q in questions])
+        def convert(tokens):
+            tokens[0][:] = old_to_new_voc[tokens[0]]
+            tokens[1][:] = old_to_new_lem[tokens[1]]
+        map(convert, [tf for tf in train_files])
+        map(convert, [q for q in questions])
 
     #   group sentences of a single question into a single array
     question_groups = [questions[i * 5: (i + 1) * 5] for
@@ -244,104 +282,94 @@ def load_spacy_raw(subset, min_occ, min_files):
     return train_files, question_groups, answers
 
 
-def ngrams(n, tree_ngram, use_deps, token_ind, parent_ind, dep_type,
-           invalid_tokens=None):
+def ngrams(n, features, parent_ind=None, invalid_tokens={}):
     """
-    Converts token, head and dependeny indices into n-grams.
-    Can create dependeny-syntax-tree-based n-grams and linear
-    n-grams.
+    Converts a text represented with feature indices inton-grams.
+    Can create dependeny-syntax-tree-based n-grams and linear n-grams.
+
+    All the features are appended for each of the terms in the ngram.
+    For example, for n=2 (bigrams), and three features, the first resulting
+    bigram would be [ ftrs[0][1], ftrs[1][1], ftrs[2][1], ftrs[0][0],
+        ftrs[1][0], ftrs[2][0]]. Note that terms in n-grams are ordered
+    last-to-first, while features are ordered first to last.
 
     Tree-based n-grams are formed by following the tree
     heirarchy upwards from a node. Dependency type can also be
-    inserted into the n-gram. For example, if par(x) denotes the
-    parent of 'x', and type(x) denotes the type of dependancy between
-    'x' and par(x), then a 3-gram for any given 'x' can be
-    (x, type(x), par(x), type(par(x)), par(par(x))) or
-    (x, par(x), par(par(x))) if dependency types are used or not,
-    respectively.
+    inserted into the n-gram as one of the features.
 
-    Linear n-grams are plain old sequence based n-grams, organized
-    backwards, so that for a sentence "a b c", the resulting bigrams
-    would be [(b, a), (c, b)]. This organization is consistent with
-    syntax-tree ngrams in the sense that the conditioned term is
-    the 0-th element in the ngram, followed by it's closest conditioning
-    term, and so forth.
+    Linear n-grams are generated if the 'parent_ind' parameter is
+    None, otherwise tree-based n-grams are made.
 
-    :param token_ind: Token indices of a text.
+    :param n: Desired n-gram length.
+    :param features: An iterable of features. Each feature is a numpy
+        array of indices. All of the features must have the same
+        shape, that being (N, 1), where N is the number of terms in text.
     :param parent_ind: Indices of node parents in the dependancy syntax
         tree. If a node has no parent (is root of a sentence), then it's
         parent_ind is the same as it's own index.
-    :param dep_type: Dependency type of a node towards it's parent.
-    :param n: Desired n-gram length.
-    :param tree_ngram: If or not n-grams should be based on the
-        dependancy tree structure.
-    :param use_deps: If or not syntactic dependancies should be
-        included in the n-gram (only applicable if tree_ngram is True).
     :param invalid_tokens: An iterable of token indices that should be
         removed from the resulting n-gram list. Useful for removing
         stop-words, substitute tokens etc.
 
-    :return: Returns a numpy array of shape (count, n_gram_depth),
+    :return: Returns a numpy array of shape (count, features),
         where count is the number of resulting n-grams (depends on n),
-        and n_gram_depth is the number of n_gram parameters (depends on n
-        and if tree dependencies are used). Note that the 0-th column
-        in the array is the conditioned term, 1-st colum is it's closest
-        conditioning term, and so forth.
+        and features = n * len(features). The first len(features)
+        columns in the result are the conditioned term, the following
+        len(features) colums are the closest conditioning term, etc.
     """
+    #   some info we will use
+    token_len = features[0].size
+    feature_count = len(features)
+    use_tree = parent_ind is not None
 
-    assert token_ind.size == parent_ind.size, \
-        "Must have the same number of token indices and head indices"
-    assert token_ind.size == dep_type.size, \
-        "Must have the same number of token indices and dependency types"
+    #   ensure feature and parent dimensions correspond
+    for ftr in features:
+        assert ftr.size == token_len, "All features must be of same size"
+    if use_tree:
+        assert parent_ind.size == token_len, \
+            "Parent indices size not equal to feature size"
 
     #   calculate the shape of the resulting array
-    if tree_ngram:
-        shape = (token_ind.size, (n * 2 - 1) if use_deps else n)
-    else:
-        shape = (token_ind.size - n + 1, n)
+    shape = (token_len - (0 if use_tree else n - 1), n * feature_count)
 
     #   init array, and set first column (the conditioned term)
     r_val = np.zeros(shape, dtype='uint32')
-    if tree_ngram:
-        #   in tree n-grams, the bottom node is conditioned
-        r_val[:, 0] = token_ind
-    else:
-        #   in linear ngrams, the last node is conditioned
-        r_val[:, -1] = token_ind[:token_ind.size - n + 1]
 
-    #   append other n-gram terms
-    for ind in xrange(1, n):
+    #   populate r_val with n-gram features
+    #   iterate through all the features first
+    for feature_ind, feature in enumerate(features):
 
-        if tree_ngram:
-            if use_deps:
-                r_val[:, ind * 2 - 1] = dep_type
-                r_val[:, ind * 2] = token_ind[parent_ind]
-            else:
-                r_val[:, ind] = token_ind[parent_ind]
-
-            #   move on with the heirarchy
-            dep_type = dep_type[parent_ind]
-            parent_ind = parent_ind[parent_ind]
+        if use_tree:
+            #   in tree-based-ngrams we go upwards through the tree
+            #   for each features we will modify the parent_ind as we go along
+            #   so ensure that the original parent_ind remains intact
+            current_parent_ind = np.array(parent_ind)
+            #   go through terms in the ngram for current feature
+            for term_ind in xrange(n):
+                #   set r_val values to current feature
+                r_val[term_ind * feature_count + feature_ind, :] = feature
+                #   step up through the tree-ngram heirarchy
+                feature = feature[current_parent_ind]
+                current_parent_ind = current_parent_ind[current_parent_ind]
 
         else:
-            r_val[:, -1 - ind] = token_ind[ind:token_ind.size - n + 1 + ind]
+            #   go through terms in the ngram for current feature
+            for term_ind in xrange(n):
+                #   linear n-grams are based on a backward sliding window
+                feature = feature[n - 1 - term_ind:token_len - term_ind]
+                r_val[term_ind * feature_count + feature_ind, :] = feature
 
     #   remove n-grams that contain invalid tokens
-    if invalid_tokens is not None:
+    if invalid_tokens is not None and len(invalid_tokens) > 0:
 
-        #   mask of ngrams that don't contain invalid ngrams
-        mask = np.ones(r_val.shape[0], dtype=bool)
+        #   a vector that contains invalid values for each column
+        vec = np.ones(feature_count, dtype='uint32') * -1
+        vec[invalid_tokens.keys()] = invalid_tokens.values()
+        vec = np.tile(vec, n)
 
-        #   iterate through all the invalid ngrams
-        for invalid_tok in invalid_tokens:
-
-            #   look for them in all the term dimensions
-            for i in xrange(n):
-                ind = (i * 2) if tree_ngram and use_deps else i
-                mask = np.logical_and(mask, r_val[:, ind] != invalid_tok)
-
-        #   reduce r_val
-        r_val = r_val[mask]
+        #   locate invalid values, find rows that have any invalid values
+        #   and remove those rows from r_val
+        r_val = r_val[np.logical_not((r_val == vec).any(axis=1))]
 
     return r_val
 

@@ -26,33 +26,23 @@ class NgramModel():
     """
 
     @staticmethod
-    def params_to_string(n, use_tree, dep_type_size, lmbd):
+    def params_to_string(n, tree_ngrams, feature_use, lmbd):
         """
         Returns a textual description of the ngram model that
         identifies it uniquely with respect to model hyperparameters.
         Can be used for file naming when storing models.
         """
-
-        if n == 1:
-            return "1-grams_%.2f-smoothing" % lmbd
-
-        return "%d-grams_%s_with%s-deps_%.2f-smoothing" % (
-            n, "tree" if use_tree else "linear",
-            "out" if (not use_tree) or dep_type_size is None else "",
+        return "%d-grams_%s_features-%s_%.2f-smoothing" % (
+            n, "tree" if tree_ngrams else "linear",
+            "".join([str(int(b)) for b in feature_use]),
             lmbd)
 
     @staticmethod
-    def get(n, use_tree, vocab_size, dep_type_size, lmbd,
-            train_data, path=None):
+    def get(n, lmbd, feature_use, features, parent_inds, path=None):
         """
         Gets an ngram model for the given parameters. First attempts
         to load a chached version of the model, if unable to load it,
         it trains a model and stores it for later usage.
-
-        All parameters are simply passed to the NgramModel constructor,
-        except for 'train_data' which is used with 'NgramModel.train()'
-        function, and 'path' which allows for overriding the default
-        storage dir for model caching.
         """
 
         #   the directory where we store cached models
@@ -347,15 +337,23 @@ def main():
     ts_reduction = util.argv('-s', None, int)
     min_occur = util.argv('-o', 1, int)
     min_files = util.argv('-f', 1, int)
+    bool_format = lambda s: s.lower() in ["1", "true", "yes", "t", "y"]
+    tree_ngrams = util.argv('-t', True, bool_format)
+    #   features to use, by default use only vocab
+    #   choices are: [vocab, lemma, pos-google, pos-penn, dep-type]
+    ft_format = lambda s: map(bool_format, s)
+    features_use = np.array(util.argv('-u', ft_format("10000")), ft_format)
 
     log.info("Loading data")
     trainset, question_groups, answers = data.load_spacy(
         ts_reduction, min_occur, min_files)
 
-    #   get some info about the data
-    v_size = max([tf[0].max() for tf in trainset]) + 1
-    dt_size = max([tf[2].max() for tf in trainset]) + 1
-    log.info("Vocabulary size: %d, dependancy type size: %d", v_size, dt_size)
+    #   get features and parent inds from total trainset info
+    features = [tf[:-1] for tf in trainset]
+    parent_inds = [tf[-1] for tf in trainset]
+    feature_sizes = [[a.max() for a in ft[:-1]] for ft in features]
+    feature_sizes = feature_sizes.max(axis=0) + 1
+    log.info("Feature sizes: %r", feature_sizes)
 
     #   folder where the ngram models are cached
     #   it is specific to data handling parameters
