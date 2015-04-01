@@ -17,6 +17,8 @@ from scipy.sparse import csc_matrix, coo_matrix
 
 log = logging.getLogger(__name__)
 
+_NGRAM_DIR = 'ngram_models'
+
 
 class NgramModel():
 
@@ -35,7 +37,7 @@ class NgramModel():
         dir = "%s_features-%s" % (
             "tree" if use_tree else "linear",
             "".join([str(int(b)) for b in feature_use]))
-        dir = os.path.join('ngram_models', dir)
+        dir = os.path.join(_NGRAM_DIR, dir)
         if not os.path.exists(dir):
             os.makedirs(dir)
 
@@ -334,6 +336,7 @@ def main():
     #   choices are: [vocab, lemma, pos-google, pos-penn, dep-type]
     ft_format = lambda s: map(bool_format, s)
     ftr_use = np.array(util.argv('-u', ft_format("10000"), ft_format))
+    use_tree = '-t' in sys.argv
 
     log.info("Loading data")
     trainset, question_groups, answers = data.load_spacy(
@@ -346,32 +349,32 @@ def main():
 
     #   create different n-gram models with plain +1 smoothing
     params = [
-        (NgramModel, 1, False),
-        (NgramModel, 2, False),
-        (NgramModel, 3, False),
-        (NgramModel, 4, False),
-        (NgramModel, 2, True),
-        (NgramModel, 3, True),
-        (NgramModel, 4, True)
+        (NgramModel, 1),
+        (NgramModel, 2),
+        (NgramModel, 3),
+        (NgramModel, 4)
     ]
 
     #   create averaging n-gram models
     if '-a' in sys.argv:
         params.extend([
-            (NgramAvgModel, 3, False),
-            (NgramAvgModel, 4, False),
-            (NgramAvgModel, 3, True),
-            (NgramAvgModel, 4, True),
-            (NgramAvgModel, 3, True),
-            (NgramAvgModel, 4, True)
+            (NgramAvgModel, 3),
+            (NgramAvgModel, 4),
         ])
 
     #   create the models
     for p in params:
-        p[0].get(*(p[1:] + (ftr_use, ftr_sizes, 1.0, trainset)))
+        p[0].get(*(p[1:] + (use_tree, ftr_use, ftr_sizes, 1.0, trainset)))
 
     #   evaluation of ngram models
     if '-e' in sys.argv:
+
+        #   log evaluation
+        dir = "%s_features-%s" % ("tree" if use_tree else "linear",
+                                  "".join([str(int(b)) for b in ftr_use]))
+        dir = os.path.join(_NGRAM_DIR, dir)
+        log.addHandler(logging.FileHandler(os.path.join(dir, "eval.log")))
+
         log.info("Evaluating ngram models")
 
         #   helper function for evaluation
@@ -380,7 +383,8 @@ def main():
         #   function for getting the answer index (max-a-posteriori)
         answ = lambda q_g: np.argmax([model.probability(q) for q in q_g])
         for p in params:
-            model = p[0].get(*(p[1:] + (ftr_use, ftr_sizes, 1.0, trainset)))
+            model = p[0].get(*(p[1:] + (
+                use_tree, ftr_use, ftr_sizes, 1.0, trainset)))
             answers2 = [answ(q_g) for q_g in question_groups]
             log.info("Model: %s, score: %.4f", model.description(),
                      score(answers, answers2))
