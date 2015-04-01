@@ -210,7 +210,7 @@ def load_spacy_raw(subset, min_occ=1, min_files=1):
 
     log.info("Processing training data")
     train_dir = os.path.join("data", "trainset")
-    train_paths = os.listdir(train_dir).sort()
+    train_paths = sorted(os.listdir(train_dir))
     if subset is not None:
         log.info("Taking a subset of %d training files", subset)
         train_paths = train_paths[:subset]
