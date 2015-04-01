@@ -84,8 +84,7 @@ def process_string(string, process=True):
                     dtype='uint32').flatten()
     pos = np.array(tokens.to_array([spacy.en.attrs.POS]),
                    dtype='uint8').flatten()
-    tag = np.array(tokens.to_array([spacy.en.attrs.TAG]),
-                   dtype='uint8').flatten()
+    tag = np.array([t.tag for t in tokens], dtype='uint8')
     dep_type = np.array([t.dep for t in tokens], dtype='uint8')
 
     #   convert head references to indices
@@ -257,7 +256,7 @@ def load_spacy_raw(subset, min_occ=1, min_files=1):
         new_voc_len = voc_to_keep.size
         new_lem_len = lem_to_keep.size
         log.info("New vocab len: %d, lemma len: %d", new_voc_len, new_lem_len)
-        log.info("Tokens kept: %.2f",
+        log.info("Tokens kept: %.5f",
                  float(voc_count[voc_to_keep].sum()) / float(voc_count.sum()))
 
         #   data structure for vocab and lemma conversion
@@ -357,6 +356,7 @@ def ngrams(n, features, parent_ind=None, invalid_tokens={}):
             for term_ind in xrange(n):
                 #   linear n-grams are based on a backward sliding window
                 feature = feature[n - 1 - term_ind:token_len - term_ind]
+                feature.shape = (feature.size, 1)
                 r_val[term_ind * feature_count + feature_ind, :] = feature
 
     #   remove n-grams that contain invalid tokens
