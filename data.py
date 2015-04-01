@@ -346,7 +346,7 @@ def ngrams(n, features, parent_ind=None, invalid_tokens={}):
             #   go through terms in the ngram for current feature
             for term_ind in xrange(n):
                 #   set r_val values to current feature
-                r_val[term_ind * feature_count + feature_ind, :] = feature
+                r_val[:, term_ind * feature_count + feature_ind] = feature
                 #   step up through the tree-ngram heirarchy
                 feature = feature[current_parent_ind]
                 current_parent_ind = current_parent_ind[current_parent_ind]
@@ -355,9 +355,8 @@ def ngrams(n, features, parent_ind=None, invalid_tokens={}):
             #   go through terms in the ngram for current feature
             for term_ind in xrange(n):
                 #   linear n-grams are based on a backward sliding window
-                feature = feature[n - 1 - term_ind:token_len - term_ind]
-                feature.shape = (feature.size, 1)
-                r_val[term_ind * feature_count + feature_ind, :] = feature
+                ftr = feature[n - 1 - term_ind:token_len - term_ind]
+                r_val[:, term_ind * feature_count + feature_ind] = ftr
 
     #   remove n-grams that contain invalid tokens
     if invalid_tokens is not None and len(invalid_tokens) > 0:

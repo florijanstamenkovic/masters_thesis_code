@@ -236,7 +236,7 @@ class NgramModel():
         just passes it this model's parameters.
         """
         return NgramModel.params_to_path(
-            self.n, self.use_tree, self.dep_type_size, self.lmbd)
+            self.n, self.use_tree, self.feature_use, self.lmbd)
 
 
 class NgramAvgModel():
@@ -340,7 +340,7 @@ def main():
         ts_reduction, min_occur, min_files)
 
     #   get features and parent inds from total trainset info
-    ftr_sizes = [[a.max() for a in tf[:-1]] for tf in trainset]
+    ftr_sizes = [[a.max() + 1 for a in tf[:-1]] for tf in trainset]
     ftr_sizes = np.array(ftr_sizes).max(axis=0) + 1
     log.info("Feature sizes: %r", ftr_sizes)
 
@@ -352,10 +352,7 @@ def main():
         (NgramModel, 4, False),
         (NgramModel, 2, True),
         (NgramModel, 3, True),
-        (NgramModel, 4, True),
-        (NgramModel, 2, True),
-        (NgramModel, 3, True),
-        (NgramModel, 4, True),
+        (NgramModel, 4, True)
     ]
 
     #   create averaging n-gram models
@@ -383,7 +380,7 @@ def main():
         #   function for getting the answer index (max-a-posteriori)
         answ = lambda q_g: np.argmax([model.probability(q) for q in q_g])
         for p in params:
-            model = p[0].get(*p[1:])
+            model = p[0].get(*(p[1:] + (ftr_use, ftr_sizes, 1.0, trainset)))
             answers2 = [answ(q_g) for q_g in question_groups]
             log.info("Model: %s, score: %.4f", model.description(),
                      score(answers, answers2))
