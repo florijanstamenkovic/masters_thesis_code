@@ -28,23 +28,7 @@ class NgramModel():
     """
 
     @staticmethod
-    def params_to_path(n, use_tree, feature_use, lmbd):
-        """
-        Returns a textual description of the ngram model that
-        identifies it uniquely with respect to model hyperparameters.
-        Can be used for file naming when storing models.
-        """
-        dir = "%s_features-%s" % (
-            "tree" if use_tree else "linear",
-            "".join([str(int(b)) for b in feature_use]))
-        dir = os.path.join(_NGRAM_DIR, dir)
-        if not os.path.exists(dir):
-            os.makedirs(dir)
-
-        return os.path.join(dir, "%d-grams_%.2f-smoothing" % (n, lmbd))
-
-    @staticmethod
-    def get(n, use_tree, feature_use, feature_sizes, lmbd, trainset):
+    def get(n, use_tree, feature_use, feature_sizes, lmbd, trainset, dir):
         """
         Gets an ngram model for the given parameters. First attempts
         to load a chached version of the model, if unable to load it,
@@ -52,7 +36,7 @@ class NgramModel():
         """
 
         #   try loading the model
-        path = NgramModel.params_to_path(n, use_tree, feature_use, lmbd)
+        path = os.path.join(dir, "%d-grams_%.2f-smoothing" % (n, lmbd))
         model = util.try_pickle_load(path)
         if model is not None:
             return model
@@ -69,16 +53,14 @@ class NgramModel():
         """
         Calculates how an n-dimensional matrix of ngrams can be
         falttened into a 2-dimensional matrix, so that sparse
-        matrix operations can be done. For performance benefits
-        it is desired that the second dimension is minimal, while
-        the first can not exceed 'sys.maxint'.
+        matrix operations can be done.
 
         :return: A tuple of form (shape, mapping). The 'shape'
             part is just a tuple defining the shape of the sparse
             matrix to be used when working with 2d-n-grams. The
             'mapping' part is a mapping matrix of shape [2, n]
             that can be used (dot product) to map ngrams from their
-            origina n-dimensional space to a 2D space.
+            original n-dimensional space to a 2D space.
         """
 
         #   cache this because it is used often
@@ -159,7 +141,10 @@ class NgramModel():
         self.lmbd = lmbd
 
     def features_to_ngrams(self, features, parent_ind):
-
+        """
+        Converts features to n-grams. If this model is set to use
+        tree-ngrams, then 'parent_ind' is utilized as well.
+        """
         #   reduce features
         features = [features[i] for i in xrange(len(features))
                     if self.feature_use[i]]
@@ -184,7 +169,7 @@ class NgramModel():
         (it also includes additive smoothing).
 
         :param trainset: An iterable of texts. Each text
-            is a tokens tuple (vocab_indices, head_indices, dep_type_indices)
+            is a tokens tuple (feature_1, feature_2, ..., parent_ind)
             as returned by the 'data.process_string' function.
         """
 
@@ -226,19 +211,13 @@ class NgramModel():
             (feature_1, feature_2, ... , parent_inds)
             as returned by 'data.process_string' function.
         """
-
         ngrams = self.features_to_ngrams(tokens[:-1], tokens[-1])
         probs = map(lambda ind: self.counts[tuple(ind)], ngrams)
         probs = [(e if isinstance(e, float) else e.sum()) + 1 for e in probs]
         return np.prod(probs) / self.prob_normalizer
 
-    def description(self):
-        """
-        Returns the same string as 'NgramModel.params_to_path',
-        just passes it this model's parameters.
-        """
-        return NgramModel.params_to_path(
-            self.n, self.use_tree, self.feature_use, self.lmbd)
+    def __str__(self):
+        return "%d-grams_%.2f-smoothing" % (self.n, self.lmbd)
 
 
 class NgramAvgModel():
@@ -298,14 +277,10 @@ class NgramAvgModel():
 
         return total
 
-    def description(self):
-        """
-        A textual description of the model. Uniquely describes the model,
-        but not suitable for file names due to newlines.
-        """
+    def __str__(self):
         r_val = "ngram-averaging model, made of:"
         for w, m in zip(self.weights, self.models):
-            r_val += "\n\t%.2f * %s" % (w, m.description())
+            r_val += "\n\t%.2f * %s" % (w, m)
         return r_val
 
 
@@ -322,6 +297,10 @@ def main():
             in the trainset. Other terms are replaced with a special token.
         -f MIN_FILES : Only uses terms that occur in MIN_FILES or more files
             in the trainset. Other terms are replaced with a special token.
+        -t : Use tree-grams.
+        -u FTRS : Features to use. FTRS must be a string composed of zeros
+            and ones, of length 5. Ones indicate usage of following features:
+            (word, lemma, google_pos, penn_pos, dependency_type), respectively.
     """
 
     logging.basicConfig(level=logging.INFO)
@@ -336,7 +315,7 @@ def main():
     #   choices are: [vocab, lemma, pos-google, pos-penn, dep-type]
     ft_format = lambda s: map(bool_format, s)
     ftr_use = np.array(util.argv('-u', ft_format("10000"), ft_format))
-    use_tree = '-t' in sys.argv
+    tree = '-t' in sys.argv
 
     log.info("Loading data")
     trainset, question_groups, answers = data.load_spacy(
@@ -347,32 +326,37 @@ def main():
     ftr_sizes = np.array(ftr_sizes).max(axis=0) + 1
     log.info("Feature sizes: %r", ftr_sizes)
 
+    #   the directory where ngrams are stored
+    dir = "%s_features-%s_data-subset_%r-min_occ_%r-min_files_%r" % (
+        "tree" if tree else "linear",
+        "".join([str(int(b)) for b in ftr_use]),
+        ts_reduction, min_occur, min_files)
+    dir = os.path.join(_NGRAM_DIR, dir)
+    if not os.path.exists(dir):
+        os.makedirs(dir)
+
     #   create different n-gram models with plain +1 smoothing
     params = [
-        (NgramModel, 1),
-        (NgramModel, 2),
-        (NgramModel, 3),
-        (NgramModel, 4)
+        (NgramModel, 1, tree, ftr_use, ftr_sizes, 1.0, trainset, dir),
+        (NgramModel, 2, tree, ftr_use, ftr_sizes, 1.0, trainset, dir),
+        (NgramModel, 3, tree, ftr_use, ftr_sizes, 1.0, trainset, dir),
+        (NgramModel, 4, tree, ftr_use, ftr_sizes, 1.0, trainset, dir)
     ]
 
     #   create averaging n-gram models
     if '-a' in sys.argv:
         params.extend([
-            (NgramAvgModel, 3),
-            (NgramAvgModel, 4),
+            (NgramAvgModel, 3, tree, ftr_use, ftr_sizes, 1.0, trainset, dir),
+            (NgramAvgModel, 4, tree, ftr_use, ftr_sizes, 1.0, trainset, dir),
         ])
 
-    #   create the models
-    for p in params:
-        p[0].get(*(p[1:] + (use_tree, ftr_use, ftr_sizes, 1.0, trainset)))
-
-    #   evaluation of ngram models
-    if '-e' in sys.argv:
-
+    if '-e' not in sys.argv and '-es' not in sys.argv:
+        #   just create the models
+        for p in params:
+            p[0].get(*p[1:])
+    else:
+        #   evaluation of ngram models
         #   log evaluation
-        dir = "%s_features-%s" % ("tree" if use_tree else "linear",
-                                  "".join([str(int(b)) for b in ftr_use]))
-        dir = os.path.join(_NGRAM_DIR, dir)
         log.addHandler(logging.FileHandler(os.path.join(dir, "eval.log")))
 
         log.info("Evaluating ngram models")
@@ -383,11 +367,18 @@ def main():
         #   function for getting the answer index (max-a-posteriori)
         answ = lambda q_g: np.argmax([model.probability(q) for q in q_g])
         for p in params:
-            model = p[0].get(*(p[1:] + (
-                use_tree, ftr_use, ftr_sizes, 1.0, trainset)))
-            answers2 = [answ(q_g) for q_g in question_groups]
-            log.info("Model: %s, score: %.4f", model.description(),
-                     score(answers, answers2))
+            model = p[0].get(*p[1:])
+
+            #   check if evaluating only a subset
+            if '-es' in sys.argv:
+                q_inds = np.arange(util.argv('-es', 50, int))
+            else:
+                np.arange(answers.size)
+
+            #   evaluate on questions and report result
+            log.info("Evaluating model: %s", model)
+            answers2 = [answ(question_groups[i]) for i in q_inds]
+            log.info("\tScore: %.4f", score(answers[q_inds], answers2))
 
 
 if __name__ == "__main__":

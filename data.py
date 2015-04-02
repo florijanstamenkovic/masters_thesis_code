@@ -104,7 +104,7 @@ def load_spacy(subset=None, min_occ=1, min_files=1):
 
     dir = os.path.join("data", "processed")
     if not os.path.exists(dir):
-            os.makedirs(dir)
+        os.makedirs(dir)
     name_base = "subset_%r-min_occ_%r-min_files_%r" % (
         subset, min_occ, min_files)
 
