@@ -12,6 +12,7 @@ import itertools
 import os
 import util
 from scipy.sparse import csc_matrix, coo_matrix
+from time import time
 # import multiprocessing
 # from multiprocessing import Process, Queue
 
@@ -42,8 +43,10 @@ class NgramModel():
             return model
 
         #   failed to load model, create and train it
+        train_start_time = time()
         model = NgramModel(n, use_tree, feature_use, feature_sizes, lmbd)
         model.train(trainset)
+        log.info("Model trained in %.2f sec", time() - train_start_time)
 
         #   store model and then return it
         util.try_pickle_dump(model, path)
@@ -376,9 +379,12 @@ def main():
                 np.arange(answers.size)
 
             #   evaluate on questions and report result
+
             log.info("Evaluating model: %s", model)
+            eval_start_time = time()
             answers2 = [answ(question_groups[i]) for i in q_inds]
             log.info("\tScore: %.4f", score(answers[q_inds], answers2))
+            log.info("\tEvaluation time: %.2f sec", time() - eval_start_time)
 
 
 if __name__ == "__main__":
