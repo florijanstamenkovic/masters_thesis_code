@@ -51,6 +51,11 @@ def preprocess_string(string, tolower=True):
 
     return string
 
+#   a dictionary that maps lemmas reduced to a max of 4 chars
+#   to integer indices
+#   used in the 'process_string' method
+_lemma_4_to_ind = {}
+
 
 def process_string(string, process=True):
     """
@@ -58,14 +63,15 @@ def process_string(string, process=True):
     First it (optionally) pre-processes the string.
     Then it tokenizes and parses the file using spaCy.
     Finally it extracts vocabulary indices (orth),
-    lemma indices (lemm), part of speech indices (pos),
+    lemma indices (lemm), lemma-shortened-to-N indices (lemm_N),
+    part of speech indices (pos),
     detailed part of speech tag indices (tag),
     syntax to-parent-dependency type indices (dep) and
     dependency head indices (head).
     All are numpy arrays.
 
     :param string: A string of text.
-    :return: (orth, lemm, pos, tag, dep_type, head)
+    :return: (orth, lemm, lemm_4, pos, tag, dep_type, head)
     """
     if process:
         string = preprocess_string(string)
@@ -87,12 +93,22 @@ def process_string(string, process=True):
     tag = np.array([t.tag for t in tokens], dtype='uint8')
     dep_type = np.array([t.dep for t in tokens], dtype='uint8')
 
+    #   count cuttof-lemmas
+    def lemma_4_ind(token):
+        lemma_4 = token.lemma_[:4]
+        ind = _lemma_4_to_ind.get(lemma_4, None)
+        if ind is None:
+            ind = len(_lemma_4_to_ind)
+            _lemma_4_to_ind[lemma_4] = ind
+        return ind
+    lemm_4 = np.array(map(lemma_4_ind, tokens), dtype='uint32')
+
     #   convert head references to indices
     indices = dict(zip(tokens, xrange(len(tokens))))
     head = np.array([indices[t.head] for t in tokens],
                     dtype='uint32')
 
-    return (orth, lemm, pos, tag, dep_type, head)
+    return (orth, lemm, lemm_4, pos, tag, dep_type, head)
 
 
 def load_spacy(subset=None, min_occ=1, min_files=1):
@@ -216,60 +232,61 @@ def load_spacy_raw(subset, min_occ=1, min_files=1):
     train_files = map(load_train_file, train_paths)
 
     #   vocabulary reduction, if desired
-    if (min_occ + min_files) > 0:
+    if min_occ > 1 or min_files > 1:
         log.info("Reducing vocabulary, required min %d term occurences "
                  "across min %d files", min_occ, min_files)
 
-        #   occurence counters for terms and lemmas
-        voc_len = max([tf[0].max() for tf in train_files]) + 1
-        lem_len = max([tf[1].max() for tf in train_files]) + 1
-        voc_count = np.zeros(voc_len, dtype='uint32')
-        lem_count = np.zeros(lem_len, dtype='uint32')
-        file_voc_count = np.zeros(voc_len, dtype='uint32')
-        file_lem_count = np.zeros(lem_len, dtype='uint32')
+        #   a list of indices of features in each training file we
+        #   impose vocabulary limations on
+        ftr_to_reduce = [0, 1, 2]
 
-        def count(voc, lem):
-            """
-            Counts occurences of vocabulary indices in 'voc' and
-            adds that count to the total count 'voc_count'. Does
-            the same for lemmas. Also adds a +1 count to 'file_voc_count'
-            for all vocabulary indices in 'inds'.
-            """
-            _voc_count = np.histogram(voc, voc_len, (-0.5, voc_len - 0.5))[0]
-            voc_count.__iadd__(_voc_count)
+        #   find out the max value of each feature across all training files
+        ftr_lens = map(lambda i: max([tf[i].max() for tf in train_files]) + 1,
+                       ftr_to_reduce)
 
-            _lem_count = np.histogram(lem, lem_len, (-0.5, lem_len - 0.5))[0]
-            lem_count.__iadd__(_lem_count)
+        #   create counter arrays for tokens of each feature
+        ftr_counts = map(lambda len: np.zeros(len, dtype='uint32'), ftr_lens)
+        #   create counter arrays for feature-in-file occurenecs
+        file_ftr_counts = map(lambda len: np.zeros(len, dtype='uint32'),
+                              ftr_lens)
 
-            file_voc_count[voc] += 1
-            file_lem_count[lem] += 1
+        #   count the occurences for relevant features
+        for i, ftr in enumerate(ftr_to_reduce):
+            for tf in train_files:
+                ftr_counts[i].__iadd__(np.histogram(
+                    tf[ftr], ftr_lens[i], (-0.5, ftr_lens[i] - 0.5))[0])
 
-        #   count occurences in train files
-        map(count, [tf[0] for tf in train_files],
-            [tf[1] for tf in train_files])
+                file_ftr_counts[i][tf[ftr]] += 1
 
-        #   term and lemma indices that should be kept
-        voc_to_keep = np.arange(voc_len, )[
-            np.logical_and(voc_count >= min_occ, file_voc_count >= min_files)]
-        lem_to_keep = np.arange(lem_len, )[
-            np.logical_and(lem_count >= min_occ, file_lem_count >= min_files)]
-        new_voc_len = voc_to_keep.size
-        new_lem_len = lem_to_keep.size
-        log.info("New vocab len: %d, lemma len: %d", new_voc_len, new_lem_len)
-        log.info("Tokens kept: %.5f",
-                 float(voc_count[voc_to_keep].sum()) / float(voc_count.sum()))
+        #   feature indices that should be kept
+        keep_f = lambda len, count, f_count: np.arange(len, )[np.logical_and(
+            count >= min_occ, f_count >= min_files)]
+        ftr_to_keep = map(keep_f, ftr_lens, ftr_counts, file_ftr_counts)
 
-        #   data structure for vocab and lemma conversion
-        old_to_new_voc = np.ones((voc_len, ), dtype='uint32') * new_voc_len
-        old_to_new_voc[voc_to_keep] = np.arange(voc_to_keep.size, )
-        old_to_new_lem = np.ones((lem_len, ), dtype='uint32') * new_lem_len
-        old_to_new_lem[lem_to_keep] = np.arange(lem_to_keep.size, )
+        #   determine the new feature sizes and number of tokens kept
+        new_ftr_lens = map(len, ftr_to_keep)
+        tokens_kept = map(lambda count, keep: count[keep].sum() /
+                          float(count.sum()), ftr_counts, ftr_to_keep)
+
+        log.info("Old feature sizes: %r", ftr_lens)
+        log.info("New feature sizes: %r", new_ftr_lens)
+        log.info("Features kept: (%s)", ", ".join(
+            ["%.4f" % f for f in tokens_kept]))
+
+        #   data structures for token conversions
+        def old_to_new_ftr_f(old_len, new_len, keep):
+            r_val = np.ones(old_len, dtype='uint32') * new_len
+            r_val[keep] = np.arange(keep.size)
+            return r_val
+        old_to_new_ftr = map(
+            old_to_new_ftr_f, ftr_lens, new_ftr_lens, ftr_to_keep)
 
         log.info("Converting trainset and questions to new vocabulary")
 
         def convert(tokens):
-            tokens[0][:] = old_to_new_voc[tokens[0]]
-            tokens[1][:] = old_to_new_lem[tokens[1]]
+            for old_to_new, ind in zip(old_to_new_ftr, ftr_to_reduce):
+                ftr = tokens[ind]
+                ftr[:] = old_to_new[ftr]
         map(convert, [tf for tf in train_files])
         map(convert, [q for q in questions])
 

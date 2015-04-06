@@ -317,7 +317,7 @@ def main():
     #   features to use, by default use only vocab
     #   choices are: [vocab, lemma, pos-google, pos-penn, dep-type]
     ft_format = lambda s: map(bool_format, s)
-    ftr_use = np.array(util.argv('-u', ft_format("10000"), ft_format))
+    ftr_use = np.array(util.argv('-u', ft_format("100000"), ft_format))
     tree = '-t' in sys.argv
 
     log.info("Loading data")
@@ -376,7 +376,7 @@ def main():
             if '-es' in sys.argv:
                 q_inds = np.arange(util.argv('-es', 50, int))
             else:
-                np.arange(answers.size)
+                q_inds = np.arange(answers.size)
 
             #   evaluate on questions and report result
 

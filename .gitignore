@@ -5,4 +5,5 @@
 data/
 
 #   ignore cached models
-ngram_models/
+ngram_models/*
+!results_filter.py
