@@ -10,13 +10,9 @@ import numpy as np
 import util
 import re
 import codecs
-import spacy.en
 
 
 log = logging.getLogger(__name__)
-
-#   the tokenizer / parser used
-nlp = spacy.en.English()
 
 
 def preprocess_string(string, tolower=True):
@@ -73,6 +69,16 @@ def process_string(string, process=True):
     :param string: A string of text.
     :return: (orth, lemm, lemm_4, pos, tag, dep_type, head)
     """
+
+    #   lazy import / nlp pipeline creation, to make the spacy dependancy
+    nlp_key = "_nlp_key_in_globals_"
+    if nlp_key not in globals().keys():
+        import spacy.en
+        #   the tokenizer / parser used
+        nlp = spacy.en.English()
+        globals()[nlp_key] = nlp
+    nlp = globals()[nlp_key]
+
     if process:
         string = preprocess_string(string)
 
