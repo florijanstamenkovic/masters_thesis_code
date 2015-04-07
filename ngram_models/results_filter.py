@@ -31,6 +31,7 @@ def main():
 
             for s, m in zip(scores, models):
                 log.info("\t%s - %s", s, m)
+            log.info("\t%.4f (mean)", sum(map(float, scores)) / len(scores))
 
 
 if __name__ == '__main__':

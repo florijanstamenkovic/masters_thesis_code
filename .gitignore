@@ -6,4 +6,5 @@ data/
 
 #   ignore cached models
 ngram_models/*
-!results_filter.py
+!ngram_models/results_filter.py
+!ngram_models/eval_batch*
