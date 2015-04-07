@@ -71,9 +71,10 @@ def process_string(string, process=True):
     """
 
     #   lazy import / nlp pipeline creation, to make the spacy dependancy
+    #   optinal (only needed in this function)
+    import spacy.en
     nlp_key = "_nlp_key_in_globals_"
     if nlp_key not in globals().keys():
-        import spacy.en
         #   the tokenizer / parser used
         nlp = spacy.en.English()
         globals()[nlp_key] = nlp
