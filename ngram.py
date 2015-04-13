@@ -11,10 +11,8 @@ import sys
 import itertools
 import os
 import util
-from scipy.sparse import csc_matrix, coo_matrix
+from scipy.sparse import coo_matrix
 from time import time
-# import multiprocessing
-# from multiprocessing import Process, Queue
 
 log = logging.getLogger(__name__)
 
@@ -29,7 +27,7 @@ class NgramModel():
     """
 
     @staticmethod
-    def get(n, use_tree, feature_use, feature_sizes, lmbd, trainset, dir):
+    def get(n, use_tree, feature_use, feature_sizes, trainset, dir, lmbd=0.1):
         """
         Gets an ngram model for the given parameters. First attempts
         to load a chached version of the model, if unable to load it,
@@ -37,7 +35,7 @@ class NgramModel():
         """
 
         #   try loading the model
-        path = os.path.join(dir, "%d-grams_%.2f-smoothing" % (n, lmbd))
+        path = os.path.join(dir, "%d-grams_%.2f-smoothing.pkl" % (n, lmbd))
         model = util.try_pickle_load(path)
         if model is not None:
             return model
@@ -122,12 +120,12 @@ class NgramModel():
         self._reduced_ngrams_val = (shape, muls)
         return (shape, muls)
 
-    def __init__(self, n, use_tree, feature_use, feature_sizes, lmbd=0.0):
+    def __init__(self, n, tree, feature_use, feature_sizes, lmbd):
         """
         Initializes the ngram model. Does not train it.
 
         :param n: Number of tokens (words) that constitute an n-gram.
-        :param use_tree: If n-grams should be generated from the dependency
+        :param tree: If n-grams should be generated from the dependency
             syntax tree. If False n-grams are generated in a linear way
             (the common definitinon of word n-grams).
         :param feature_use: An array of booleans which indicate which of the
@@ -138,32 +136,12 @@ class NgramModel():
         """
 
         self.n = n
-        self.use_tree = use_tree
+        self.tree = tree
         self.feature_use = feature_use
         self.feature_sizes = feature_sizes
         self.lmbd = lmbd
 
-    def features_to_ngrams(self, features, parent_ind):
-        """
-        Converts features to n-grams. If this model is set to use
-        tree-ngrams, then 'parent_ind' is utilized as well.
-        """
-        #   reduce features
-        features = [features[i] for i in xrange(len(features))
-                    if self.feature_use[i]]
-        #   replacement tokens (max index) should not be used in ngrams
-        invalid_ind = [self.feature_sizes[i] - 1 for i in xrange(len(features))
-                       if self.feature_use[i]]
-
-        ngrams = data.ngrams(self.n, features,
-                             parent_ind if self.use_tree else None,
-                             invalid_tokens=dict(enumerate(invalid_ind)))
-
-        #   reduce ngrams to two dimensions (for sparse matrices to handle)
-        _, multipliers = self.reduced_ngrams_mul()
-        return np.dot(ngrams, multipliers.T)
-
-    def train(self, trainset):
+    def train(self, ngrams):
         """
         Trains the model on the given data. Training boils down to
         counting ngram occurences, which are then stored in
@@ -179,25 +157,15 @@ class NgramModel():
         log.info("Training %d-gram model", self.n)
 
         #   calculate the shape of the accumulator
-        cnt_shape, _ = self.reduced_ngrams_mul()
+        #   and convert ngrams from (N, n) shape to (N, 2)
+        cnt_shape, multipliers = self.reduced_ngrams_mul()
+        ngrams = np.dot(ngrams, multipliers.T)
 
         #   create the accumulator
-        counts = csc_matrix(cnt_shape, dtype='uint32')
-        log.info("Creating accumulator of shape %r, counting occurences",
-                 counts.shape)
-
-        #   go through the training files
-        for ind, train_file in enumerate(trainset):
-            log.debug("Counting occurences in train text #%d", ind)
-            ngrams = self.features_to_ngrams(
-                train_file[:-1], train_file[-1] if self.use_tree else None)
-            log.debug("%d-grams shape: %d", self.n, ngrams.shape[0])
-            assert ngrams.ndim == 2, "Only 2D n-gram matrix allowed"
-
-            #   count ngrams
-            data = (np.ones(ngrams.shape[0]))
-            counts += coo_matrix(
-                (data, (ngrams[:, 0], ngrams[:, 1])), shape=cnt_shape).tocsc()
+        counts = coo_matrix(
+            (np.ones(ngrams.shape[0], dtype='uint8'),
+                (ngrams[:, 0], ngrams[:, 1])), shape=cnt_shape,
+            dtype='uint32').tocsc()
 
         log.info("Counting done, summing up")
         self.counts = counts
@@ -205,7 +173,7 @@ class NgramModel():
         self.prob_normalizer = self.count_sum + \
             self.lmbd * np.prod(map(float, counts.shape))
 
-    def probability(self, tokens):
+    def probability(self, ngrams):
         """
         Calculates and returns the probability of
         a series of tokens.
@@ -214,7 +182,8 @@ class NgramModel():
             (feature_1, feature_2, ... , parent_inds)
             as returned by 'data.process_string' function.
         """
-        ngrams = self.features_to_ngrams(tokens[:-1], tokens[-1])
+        _, multipliers = self.reduced_ngrams_mul()
+        ngrams = np.dot(ngrams, multipliers.T)
         probs = map(lambda ind: self.counts[tuple(ind)], ngrams)
         probs = [(e if isinstance(e, float) else e.sum()) + 1 for e in probs]
         return np.prod(probs) / self.prob_normalizer
@@ -231,7 +200,7 @@ class NgramAvgModel():
     """
 
     @staticmethod
-    def get(n, use_tree, feature_use, feature_sizes, lmbd, trainset,
+    def get(n, use_tree, feature_use, feature_sizes, trainset, dir, lmbd=0.1,
             weight=0.5):
         """
         Gets an averaging ngram model for the given parameters.
@@ -246,8 +215,9 @@ class NgramAvgModel():
         not a 'float', it is expected to be an iterable of n floats.
         """
 
-        models = [NgramModel.get(n, use_tree, feature_use, feature_sizes, lmbd,
-                                 trainset) for x in xrange(n, 0, -1)]
+        models = [NgramModel.get(
+            n, use_tree, feature_use, feature_sizes,
+            trainset, dir, lmbd) for x in xrange(n, 0, -1)]
 
         if isinstance(weight, float):
             weights = [1.0]
@@ -311,78 +281,71 @@ def main():
 
     #   get the data handling parameters
     ts_reduction = util.argv('-s', None, int)
-    min_occur = util.argv('-o', 1, int)
+    min_occ = util.argv('-o', 1, int)
     min_files = util.argv('-f', 1, int)
-    bool_format = lambda s: s.lower() in ["1", "true", "yes", "t", "y"]
     #   features to use, by default use only vocab
-    #   choices are: [vocab, lemma, pos-google, pos-penn, dep-type]
-    ft_format = lambda s: map(bool_format, s)
+    #   choices are: [vocab, lemma, lemma-4, pos-google, pos-penn, dep-type]
+    ft_format = lambda s: map(
+        lambda s: s.lower() in ["1", "true", "yes", "t", "y"], s)
     ftr_use = np.array(util.argv('-u', ft_format("100000"), ft_format))
     tree = '-t' in sys.argv
-
-    log.info("Loading data")
-    trainset, question_groups, answers = data.load_spacy(
-        ts_reduction, min_occur, min_files)
-
-    #   get features and parent inds from total trainset info
-    ftr_sizes = [[a.max() + 1 for a in tf[:-1]] for tf in trainset]
-    ftr_sizes = np.array(ftr_sizes).max(axis=0) + 1
-    log.info("Feature sizes: %r", ftr_sizes)
 
     #   the directory where ngrams are stored
     dir = "%s_features-%s_data-subset_%r-min_occ_%r-min_files_%r" % (
         "tree" if tree else "linear",
         "".join([str(int(b)) for b in ftr_use]),
-        ts_reduction, min_occur, min_files)
+        ts_reduction, min_occ, min_files)
     dir = os.path.join(_NGRAM_DIR, dir)
     if not os.path.exists(dir):
         os.makedirs(dir)
 
+    #   store logs
+    if '-e' in sys.argv or '-es' in sys.argv:
+        log_name = os.path.join(dir, "eval.log")
+        log.addHandler(logging.FileHandler(log_name))
+
     #   create different n-gram models with plain +1 smoothing
     params = [
-        (NgramModel, 1, tree, ftr_use, ftr_sizes, 1.0, trainset, dir),
-        (NgramModel, 2, tree, ftr_use, ftr_sizes, 1.0, trainset, dir),
-        (NgramModel, 3, tree, ftr_use, ftr_sizes, 1.0, trainset, dir),
-        (NgramModel, 4, tree, ftr_use, ftr_sizes, 1.0, trainset, dir)
+        (NgramModel, 1),
+        (NgramModel, 2),
+        (NgramModel, 3),
+        (NgramModel, 4)
     ]
 
     #   create averaging n-gram models
     if '-a' in sys.argv:
         params.extend([
-            (NgramAvgModel, 3, tree, ftr_use, ftr_sizes, 1.0, trainset, dir),
-            (NgramAvgModel, 4, tree, ftr_use, ftr_sizes, 1.0, trainset, dir),
+            (NgramAvgModel, 3),
+            (NgramAvgModel, 4),
         ])
 
-    if '-e' not in sys.argv and '-es' not in sys.argv:
-        #   just create the models
-        for p in params:
-            p[0].get(*p[1:])
-    else:
-        #   evaluation of ngram models
-        #   log evaluation
-        log.addHandler(logging.FileHandler(os.path.join(dir, "eval.log")))
+    for model_type, n in params:
 
-        log.info("Evaluating ngram models")
+        #   load the ngram data, answers, feature sizes etc
+        sent_ngrams, qg_ngrams, answers, ftr_sizes = data.load_ngrams(
+            n, ftr_use, tree, ts_reduction, min_occ, min_files)
 
-        #   helper function for evaluation
-        score = lambda a, b: (a == b).sum() / float(len(a))
+        #   get the model
+        model = model_type.get(
+            n, tree, ftr_use, ftr_sizes, sent_ngrams, dir)
 
-        #   function for getting the answer index (max-a-posteriori)
-        answ = lambda q_g: np.argmax([model.probability(q) for q in q_g])
-        for p in params:
-            model = p[0].get(*p[1:])
+        if '-e' in sys.argv or '-es' in sys.argv:
 
-            #   check if evaluating only a subset
+            #   evaluation helper functions
+            answ = lambda q_g: np.argmax([model.probability(q) for q in q_g])
+            score = lambda a, b: (a == b).sum() / float(len(a))
+
+            #   indices of questions used in evaluation
+            #   different if we are checking a subset (-es flag)
             if '-es' in sys.argv:
                 q_inds = np.arange(util.argv('-es', 50, int))
             else:
                 q_inds = np.arange(answers.size)
 
-            #   evaluate on questions and report result
-
+            #   evaluate model
             log.info("Evaluating model: %s", model)
             eval_start_time = time()
-            answers2 = [answ(question_groups[i]) for i in q_inds]
+            answers2 = [answ(qg_ngrams[i]) for i in q_inds]
             log.info("\tScore: %.4f", score(answers[q_inds], answers2))
             log.info("\tEvaluation time: %.2f sec", time() - eval_start_time)
 
