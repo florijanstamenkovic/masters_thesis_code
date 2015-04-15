@@ -13,7 +13,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="")
     log.info("Ngram model evaluation")
 
-    for dir in os.listdir("."):
+    for dir in sorted(os.listdir(".")):
         path = os.path.join(dir, "eval.log")
         if not os.path.exists(path):
             continue
