@@ -544,10 +544,10 @@ def load_ngrams(n, features_use, tree, subset=None, min_occ=1, min_files=1,
 
         #   store the processed data for subsequent usage
         #   split sent ngrams to avoid Py bug with pickling large arrays
-        ngrams_all = (
+        util.try_pickle_dump((
             np.vsplit(sent_ngrams, np.arange(10, ) * (len(sent_ngrams) / 10)),
-            q_ngrams, answers, ftr_sizes)
-        util.try_pickle_dump(ngrams_all, file_name)
+            q_ngrams, answers, ftr_sizes), file_name)
+        ngrams_all = (sent_ngrams, q_ngrams, answers, ftr_sizes)
 
     #   remove unwanted features from ngrams_all
     used_ftr = np.arange(ngrams_all[0].shape[1])[np.tile(features_use, n)]
