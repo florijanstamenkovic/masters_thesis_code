@@ -517,6 +517,11 @@ def load_ngrams(n, features_use, tree, subset=None, min_occ=1, min_files=1,
         #   look for the cached 4-grams with all the features
         file_name = os.path.join(dir, name_base + ".pkl")
         ngrams_all = util.try_pickle_load(file_name)
+        #   it is possible that sentences are split
+        #   in order to avoid Python bug with storing large arrays
+        if not isinstance(ngrams_all[0], np.ndarray):
+            sents = np.vstack(ngrams_all[0])
+            ngrams_all = (sents,) + ngrams_all[1:]
 
     #   if unable to load cached data, create it
     if ngrams_all is None:
@@ -538,7 +543,10 @@ def load_ngrams(n, features_use, tree, subset=None, min_occ=1, min_files=1,
         q_ngrams = [map(_ngrams, qg) for qg in q_groups]
 
         #   store the processed data for subsequent usage
-        ngrams_all = (sent_ngrams, q_ngrams, answers, ftr_sizes)
+        #   split sent ngrams to avoid Py bug with pickling large arrays
+        ngrams_all = (
+            np.vsplit(sent_ngrams, np.arange(10, ) * (len(sent_ngrams) / 10)),
+            q_ngrams, answers, ftr_sizes)
         util.try_pickle_dump(ngrams_all, file_name)
 
     #   remove unwanted features from ngrams_all
