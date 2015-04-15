@@ -519,7 +519,7 @@ def load_ngrams(n, features_use, tree, subset=None, min_occ=1, min_files=1,
         ngrams_all = util.try_pickle_load(file_name)
         #   it is possible that sentences are split
         #   in order to avoid Python bug with storing large arrays
-        if not isinstance(ngrams_all[0], np.ndarray):
+        if ngrams_all is not None and isinstance(ngrams_all[0], list):
             sents = np.vstack(ngrams_all[0])
             ngrams_all = (sents,) + ngrams_all[1:]
 
