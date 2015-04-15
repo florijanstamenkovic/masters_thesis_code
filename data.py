@@ -291,7 +291,7 @@ def _load(subset=None, min_occ=1, min_files=1):
         #   create counter arrays for tokens of each feature
         ftr_counts = map(lambda len: np.zeros(len, dtype='uint32'), ftr_lens)
         #   create counter arrays for feature-in-file occurenecs
-        file_ftr_counts = map(lambda len: np.zeros(len, dtype='uint32'),
+        file_ftr_counts = map(lambda len: np.zeros(len, dtype='uint16'),
                               ftr_lens)
 
         #   count the occurences for relevant features
@@ -314,21 +314,22 @@ def _load(subset=None, min_occ=1, min_files=1):
         ftr_to_keep = map(keep_f, ftr_lens, ftr_counts, file_ftr_counts)
 
         #   determine the new feature sizes and number of tokens kept
-        new_ftr_lens = map(len, ftr_to_keep)
+        new_ftr_lens = np.array(
+            map(lambda f: len(f) + 1, ftr_to_keep), dtype=int)
         tokens_kept = map(lambda count, keep: count[keep].sum() /
                           float(count.sum()), ftr_counts, ftr_to_keep)
 
-        log.info("New feature sizes: %r", new_ftr_lens + 1)
+        log.info("New feature sizes: %r", new_ftr_lens)
         log.info("Features kept: (%s)", ", ".join(
             ["%.4f" % f for f in tokens_kept]))
 
         #   data structures for token conversions
-        def old_to_new_ftr_f(old_len, new_len, keep):
-            r_val = np.ones(old_len, dtype='uint32') * new_len
+        def old_to_new_ftr_f(old_len, substitute, keep):
+            r_val = np.ones(old_len, dtype='uint32') * substitute
             r_val[keep] = np.arange(keep.size)
             return r_val
         old_to_new_ftr = map(
-            old_to_new_ftr_f, ftr_lens, new_ftr_lens, ftr_to_keep)
+            old_to_new_ftr_f, ftr_lens, new_ftr_lens - 1, ftr_to_keep)
 
         log.info("Converting trainset and questions to new vocabulary")
 
@@ -418,7 +419,7 @@ def ngrams(n, tree, tokens, invalid_tokens=None):
     else:
         shape = (sent_ngram_lens.sum(), n * feature_count)
 
-    r_val = np.zeros(shape, dtype='uint32')
+    r_val = np.zeros(shape, dtype='uint16')
 
     #   populate r_val with n-gram features
     #   iterate through all the features first
@@ -461,15 +462,13 @@ def ngrams(n, tree, tokens, invalid_tokens=None):
     if invalid_tokens is not None and len(invalid_tokens) > 0:
 
         #   a vector that contains invalid values for each column
-        vec = np.ones(feature_count, dtype='uint32') * -1
+        vec = np.ones(feature_count, dtype='uint16') * -1
         vec[invalid_tokens.keys()] = invalid_tokens.values()
         vec = np.tile(vec, n)
 
         #   locate invalid values, find rows that have any invalid values
         #   and remove those rows from r_val
-        log.info("Removing invalid ngrams")
         ok_rows = np.logical_not((r_val == vec).any(axis=1))
-        log.info("%.2f acceptable rows", ok_rows.size / float(r_val.shape[0]))
         r_val = r_val[ok_rows]
 
     return r_val
