@@ -25,8 +25,8 @@ class LRBM():
 
     def __init__(self, n, vocab_sizes, repr_sizes, n_hid, rng=None):
 
-        log.info("Creating an LRBM, n=%d, vocab_sizes=%r, repr_sizes=%r",
-                 n, vocab_sizes, repr_sizes)
+        log.info("Creating an LRBM, n=%d, vocab_sizes=%r, repr_sizes=%r"
+                 "n_hid=%d", n, vocab_sizes, repr_sizes, n_hid)
 
         #   n-gram size
         self.n = n

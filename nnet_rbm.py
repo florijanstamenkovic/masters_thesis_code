@@ -97,6 +97,8 @@ def main():
     alpha = util.argv('-a', 0.5, float)
     eps = util.argv('-eps', 0.005, float)
     mnb = util.argv('-mnb', 2000, int)
+    n_hid = util.argv('-h', 1000, int)
+    d = util.argv('-d', 100, int)
 
     #   load data
     ngrams, q_groups, answers, feature_sizes = data.load_ngrams(
@@ -117,8 +119,8 @@ def main():
         os.makedirs(dir)
 
     #   filename base for this model
-    file = "train_mnb-%d_epochs-%d_eps-%.3f_alpha-%.1f" % (
-        mnb, epochs, eps, alpha)
+    file = "nhid-%d_d-%d_train_mnb-%d_epochs-%d_eps-%.3f_alpha-%.1f" % (
+        n_hid, d, mnb, epochs, eps, alpha)
 
     #   store the logs
     log_file_handler = logging.FileHandler(os.path.join(dir, file + ".log"))
@@ -126,7 +128,7 @@ def main():
     logging.root.addHandler(log_file_handler)
 
     #   default vector representation sizes
-    repr_sizes = np.array([200, 150, 100, 10, 10, 10], dtype='uint8')
+    repr_sizes = np.array([d, d, d, 10, 10, 10], dtype='uint8')
 
     #   epoch callback used for evaluation on the data completion challenge
     def epoch_callback(lrbm, epoch):
@@ -144,7 +146,7 @@ def main():
         )
 
     log.info("Creating LRBM")
-    lrbm = LRBM(n, feature_sizes[ftr_use], repr_sizes[ftr_use], 1000, 12345)
+    lrbm = LRBM(n, feature_sizes[ftr_use], repr_sizes[ftr_use], n_hid, 12345)
     lrbm.epoch_callback = epoch_callback
     lrbm.train(x_train, x_valid, mnb, epochs, eps, alpha)
 
