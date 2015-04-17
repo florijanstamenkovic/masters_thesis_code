@@ -95,7 +95,7 @@ def main():
     #   get nnet training parameters
     epochs = util.argv('-ep', 20, int)
     alpha = util.argv('-a', 0.5, float)
-    eps = util.argv('-eps', 0.005, float)
+    eps = util.argv('-eps', 0.002, float)
     mnb = util.argv('-mnb', 2000, int)
     n_hid = util.argv('-h', 1000, int)
     d = util.argv('-d', 100, int)
