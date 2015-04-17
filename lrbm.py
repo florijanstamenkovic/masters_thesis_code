@@ -112,38 +112,17 @@ class LRBM():
             n=1, p=self.hid_prb_pos, size=self.hid_prb_pos.shape,
             dtype=theano.config.floatX)
 
-        #   contrastive divergence steps
-        #   let's start with defining the function of a single step
-        def cd_step(step_hid_input):
-            #   calculate visible layer probabilities and activations
-            step_vis_prb = T.nnet.sigmoid(
-                T.dot(step_hid_input, self.w.T) + self.b_vis)
-            step_vis_act = self.theano_rng.binomial(
-                n=1, p=step_vis_prb, size=step_vis_prb.shape,
-                dtype=theano.config.floatX)
+        self.vis_prb_neg = T.nnet.sigmoid(
+            T.dot(self.hid_act_pos, self.w.T) + self.b_vis)
+        self.vis_act_neg = self.theano_rng.binomial(
+            n=1, p=self.vis_prb_neg, size=self.vis_prb_neg.shape,
+            dtype=theano.config.floatX)
 
-            #   calculate hidden layer probabilities and activations
-            step_hid_prb = T.nnet.sigmoid(
-                T.dot(step_vis_act, self.w) + self.b_hid)
-            step_hid_act = self.theano_rng.binomial(
-                n=1, p=step_hid_prb, size=step_hid_prb.shape,
-                dtype=theano.config.floatX)
-
-            return (step_vis_prb, step_vis_act, step_hid_prb, step_hid_act)
-
-        #   then we prepare the scan function
-        #   symbolic variable for the number of contrastive divergences steps
-        self.cd_steps = T.scalar('n_steps', dtype='int32')
-        scan_res, updates = theano.scan(
-            cd_step,
-            outputs_info=[None, None, None, self.hid_act_pos],
-            n_steps=self.cd_steps)
-
-        #   scan returns probabilities and activations for al CD steps
-        #   we only need the probabilities for the last step
-        self.vis_prb_neg = scan_res[0][-1]
-        self.hid_prb_neg = scan_res[2][-1]
-        self.updates = updates
+        self.hid_prb_neg = T.nnet.sigmoid(
+            T.dot(self.vis_act_neg, self.w) + self.b_hid)
+        self.hid_act_neg = self.theano_rng.binomial(
+            n=1, p=self.hid_prb_neg, size=self.hid_prb_neg.shape,
+            dtype=theano.config.floatX)
 
         #   finally the cost function we want to reduce
         #   indirectly with contrastive divergence, and directly
@@ -227,14 +206,14 @@ class LRBM():
 
         for i, (emb, rng) in enumerate(zip(self.embeddings, self.repr_ranges)):
             updates.append((emb, T.inc_subtensor(emb[input_stack[:, i]],
-                                                 (1 - alpha) * grad_l[:, rng[0]:rng[1]])))
+                                                 learn_rate * (1 - alpha) * grad_l[:, rng[0]:rng[1]])))
 
         #   finally construct the function that updates parameters
         index = T.iscalar()
         train_f = theano.function(
-            [index, learn_rate, self.cd_steps],
-            [self.reconstruction_error],
-            updates=updates + self.updates,
+            [index, learn_rate],
+            self.reconstruction_error,
+            updates=updates,
             givens={
                 self.input: x_train[index * mnb_size: (index + 1) * mnb_size]
             }
@@ -243,8 +222,8 @@ class LRBM():
 
         #   a separate function we will use for validation
         validate_f = theano.function(
-            [self.input, self.cd_steps],
-            [self.reconstruction_error],
+            [self.input],
+            self.reconstruction_error,
         )
 
         #   things we'll track through training, for reporting
@@ -272,11 +251,11 @@ class LRBM():
 
             #   iterate through the minibatches
             for batch_ind in xrange(mnb_count):
-                train_costs_mnb.append(train_f(batch_ind, epoch_eps, n_steps))
+                train_costs_mnb.append(train_f(batch_ind, epoch_eps))
                 log.debug('Batch train cost %.5f', train_costs_mnb[-1])
 
             train_costs_ep.append(
-                np.array(train_costs_mnb)[:-mnb_count].mean())
+                np.array(train_costs_mnb)[-mnb_count:].mean())
             valid_costs_ep.append(validate_f(x_valid))
             train_times_ep.append(time() - epoch_t0)
 
@@ -285,6 +264,7 @@ class LRBM():
                 '\n\tduration %.2f sec',
                 epoch_ind,
                 train_costs_ep[-1],
+                valid_costs_ep[-1],
                 train_times_ep[-1]
             )
 

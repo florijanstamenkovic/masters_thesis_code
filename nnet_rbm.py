@@ -80,10 +80,13 @@ def main():
         lambda s: s.lower() in ["1", "true", "yes", "t", "y"], s)
     ftr_use = np.array(util.argv('-u', ft_format("001000"), ft_format))
 
+    #   load data
     ngrams, q_groups, answers, feature_sizes = data.load_ngrams(
         n, ftr_use, use_tree, subset=ts_reduction,
         min_occ=min_occ, min_files=min_files)
+    log.info("Data loaded, %d ngrams", ngrams.shape[0])
 
+    #   load data
     x_train, x_valid, x_test = dataset_split(ngrams, 0.05, 0.05, rng=12345)
 
     #   default vector representation sizes
@@ -91,7 +94,7 @@ def main():
 
     log.info("Creating LRBM")
     lrbm = LRBM(n, feature_sizes[ftr_use], repr_sizes[ftr_use], 1000, 12345)
-    lrbm.train(x_train, x_valid, 1000, 10, 0.01, 0.5)
+    lrbm.train(x_train, x_valid, 1000, 10, 0.005, 0.5)
 
 if __name__ == '__main__':
     main()
