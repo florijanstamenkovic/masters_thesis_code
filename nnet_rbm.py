@@ -5,12 +5,17 @@ Sentences Completion Challenge dataset (obtained through
 the 'data' module).
 """
 
+import os
 import sys
 import util
 import data
 import logging
 import numpy as np
 from lrbm import LRBM
+import theano
+
+#   dir where we store NNet models
+_DIR = 'nnet_models'
 
 log = logging.getLogger(__name__)
 
@@ -66,8 +71,15 @@ def main():
         -u FTRS : Features to use. FTRS must be a string composed of zeros
             and ones, of length 5. Ones indicate usage of following features:
             (word, lemma, google_pos, penn_pos, dependency_type), respectively.
+
+    Neural-net specific cmd-line flags:
+        -ep EPOCHS : Number of training epochs, defaults to 20.
+        -a ALPHA : The alpha parameter of the LRBM, defaults to 0.5
+        -eps EPS : Learning rate, defaults to 0.005.
+        -mnb MBN_SIZE : Size of the minibatch, defaults to 2000.
+
     """
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     log.info("RBM energy-based neural net language model")
 
     #   get the data handling parameters
@@ -80,21 +92,60 @@ def main():
         lambda s: s.lower() in ["1", "true", "yes", "t", "y"], s)
     ftr_use = np.array(util.argv('-u', ft_format("001000"), ft_format))
 
+    #   get nnet training parameters
+    epochs = util.argv('-ep', 20, int)
+    alpha = util.argv('-a', 0.5, float)
+    eps = util.argv('-eps', 0.005, float)
+    mnb = util.argv('-mnb', 2000, int)
+
     #   load data
     ngrams, q_groups, answers, feature_sizes = data.load_ngrams(
         n, ftr_use, use_tree, subset=ts_reduction,
         min_occ=min_occ, min_files=min_files)
     log.info("Data loaded, %d ngrams", ngrams.shape[0])
 
-    #   load data
+    #   split data into sets
     x_train, x_valid, x_test = dataset_split(ngrams, 0.05, 0.05, rng=12345)
+
+    #   the directory for this model
+    dir = "%s_%d-gram_features-%s_data-subset_%r-min_occ_%r-min_files_%r" % (
+        "tree" if use_tree else "linear", n,
+        "".join([str(int(b)) for b in ftr_use]),
+        ts_reduction, min_occ, min_files)
+    dir = os.path.join(_DIR, dir)
+    if not os.path.exists(dir):
+        os.makedirs(dir)
+
+    #   filename base for this model
+    file = "train_mnb-%d_epochs-%d_eps-%.3f_alpha-%.1f" % (
+        mnb, epochs, eps, alpha)
+
+    #   store the logs
+    log_name = os.path.join(dir, file + ".log")
+    logging.root.addHandler(logging.FileHandler(log_name))
 
     #   default vector representation sizes
     repr_sizes = np.array([200, 150, 100, 10, 10, 10], dtype='uint8')
 
+    #   epoch callback used for evaluation on the data completion challenge
+    def epoch_callback(lrbm, epoch):
+
+        #   we'll use the net's energy function to eval q_groups
+        energy_f = theano.function([lrbm.input], lrbm.energy)
+        qg_energies = map(
+            lambda q_g: [energy_f(q).sum() for q in q_g], q_groups)
+        predictions = map(lambda q_g: np.argmax(q_g), qg_energies)
+        log.info(
+            'Epoch %d sentence completion eval score: %.4f, energy: %.2f',
+            epoch,
+            (np.array(predictions) == answers).sum() / float(answers.size),
+            np.sum(map(sum, qg_energies))
+        )
+
     log.info("Creating LRBM")
     lrbm = LRBM(n, feature_sizes[ftr_use], repr_sizes[ftr_use], 1000, 12345)
-    lrbm.train(x_train, x_valid, 1000, 10, 0.005, 0.5)
+    lrbm.epoch_callback = epoch_callback
+    lrbm.train(x_train, x_valid, mnb, epochs, eps, alpha)
 
 if __name__ == '__main__':
     main()

@@ -8,3 +8,4 @@ data/
 ngram_models/*
 !ngram_models/results_filter.py
 !ngram_models/eval_batch*
+nnet_models/*

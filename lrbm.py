@@ -89,9 +89,12 @@ class LRBM():
         )
 
         #   initialize theano symbolic variables
-        self.init_vars()
+        self.init_theano_vars()
 
-    def init_vars(self):
+    def init_theano_vars(self):
+        """
+        Initializes Theano expressions used in training and evaluation.
+        """
 
         #   input is a matrix of (N, n * len(repr_sizes)) dimensionality
         #   each row represents an n-gram
@@ -103,30 +106,41 @@ class LRBM():
              for i, embedding in enumerate(self.embeddings * self.n)],
             axis=1)
 
-        #   activation probability of hidden variables in the positive phase
+        #   activation probability, hidden layer, positive phase
         self.hid_prb_pos = T.nnet.sigmoid(
             T.dot(self.input_repr, self.w) + self.b_hid)
 
-        #   binary activation of hidden variables in the positive phase
+        #   binary activation, hidden layer, positive phase
         self.hid_act_pos = self.theano_rng.binomial(
             n=1, p=self.hid_prb_pos, size=self.hid_prb_pos.shape,
             dtype=theano.config.floatX)
 
+        #   activation probability, visible layer, negative phase
         self.vis_prb_neg = T.nnet.sigmoid(
             T.dot(self.hid_act_pos, self.w.T) + self.b_vis)
+
+        #   binary activation, visible layer, negative phase
         self.vis_act_neg = self.theano_rng.binomial(
             n=1, p=self.vis_prb_neg, size=self.vis_prb_neg.shape,
             dtype=theano.config.floatX)
 
+        #   activation probability, hidden layer, negative phase
         self.hid_prb_neg = T.nnet.sigmoid(
             T.dot(self.vis_act_neg, self.w) + self.b_hid)
+
+        #   binary activation, hidden layer, negative phase
         self.hid_act_neg = self.theano_rng.binomial(
             n=1, p=self.hid_prb_neg, size=self.hid_prb_neg.shape,
             dtype=theano.config.floatX)
 
-        #   finally the cost function we want to reduce
-        #   indirectly with contrastive divergence, and directly
-        #   by optimizing the vocabulary
+        #   model energy for a given input
+        self.energy = -T.dot(self.input_repr, self.b_vis.T) \
+            - T.dot(self.hid_prb_pos, self.b_hid.T) \
+            - (T.dot(self.input_repr, self.w) * self.hid_prb_pos).sum(axis=1)
+
+        #   reconstruction error that we want to reduce
+        #   we use contrastive divergence to model the distribution
+        #   and optimize the vocabulary
         self.reconstruction_error = (
             (self.input_repr - self.vis_prb_neg) ** 2).mean()
 
@@ -192,26 +206,29 @@ class LRBM():
         grad_w += weight_cost * self.w
 
         #   define a list of updates that happen during training
-        learn_rate = T.scalar("learn_rate", dtype=theano.config.floatX)
+        eps_th = T.scalar("eps", dtype=theano.config.floatX)
         updates = [
-            (self.w, self.w + learn_rate * alpha * grad_w),
-            (self.b_vis, self.b_vis + learn_rate * alpha * grad_b_vis),
-            (self.b_hid, self.b_hid + learn_rate * alpha * grad_b_hid),
+            (self.w, self.w + eps_th * alpha * grad_w),
+            (self.b_vis, self.b_vis + eps_th * alpha * grad_b_vis),
+            (self.b_hid, self.b_hid + eps_th * alpha * grad_b_hid),
         ]
 
         #   make a reoraganization of input from (N, n * d) into (N * n, d)
-        input_stack = [self.input[:, i * len(self.embeddings):
-                                  (i + 1) * len(self.embeddings)] for i in range(self.n)]
+        emb_count = len(self.embeddings)
+        input_stack = [self.input[:, i * emb_count: (i + 1) * emb_count]
+                       for i in range(self.n)]
         input_stack = T.concatenate(input_stack, axis=0)
 
+        #   generate updates for embedded representations
         for i, (emb, rng) in enumerate(zip(self.embeddings, self.repr_ranges)):
-            updates.append((emb, T.inc_subtensor(emb[input_stack[:, i]],
-                                                 learn_rate * (1 - alpha) * grad_l[:, rng[0]:rng[1]])))
+            updates.append((emb, T.inc_subtensor(
+                emb[input_stack[:, i]],
+                eps_th * (1 - alpha) * grad_l[:, rng[0]:rng[1]])))
 
         #   finally construct the function that updates parameters
         index = T.iscalar()
         train_f = theano.function(
-            [index, learn_rate],
+            [index, eps_th],
             self.reconstruction_error,
             updates=updates,
             givens={
@@ -234,6 +251,8 @@ class LRBM():
 
         #   iterate through the epochs
         log.info("Starting training")
+        #   after each epoch, call a callback if provided
+        epoch_callback = getattr(self, "epoch_callback", lambda a, b: a)
         for epoch_ind, epoch in enumerate(range(epochs)):
             epoch_t0 = time()
 
@@ -243,16 +262,11 @@ class LRBM():
             else:
                 epoch_eps = eps
 
-            #   the number of Gibbs sampling steps
-            if isinstance(steps, int):
-                n_steps = steps
-            else:
-                n_steps = steps(epoch, train_costs_ep)
-
             #   iterate through the minibatches
             for batch_ind in xrange(mnb_count):
                 train_costs_mnb.append(train_f(batch_ind, epoch_eps))
-                log.debug('Batch train cost %.5f', train_costs_mnb[-1])
+                log.debug('Mnb %d train cost %.5f',
+                          batch_ind, train_costs_mnb[-1])
 
             train_costs_ep.append(
                 np.array(train_costs_mnb)[-mnb_count:].mean())
@@ -267,6 +281,7 @@ class LRBM():
                 valid_costs_ep[-1],
                 train_times_ep[-1]
             )
+            epoch_callback(self, epoch_ind)
 
         log.info('Training duration %.2f min',
                  (sum(train_times_ep)) / 60.0)
