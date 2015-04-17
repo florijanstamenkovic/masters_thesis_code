@@ -28,8 +28,8 @@ class LRBM():
         log.info("Creating an LRBM, n=%d, vocab_sizes=%r, repr_sizes=%r",
                  n, vocab_sizes, repr_sizes)
 
-        #   input is a matrix of (N, len(repr_sizes)) dimensionality
-        self.input = T.matrix('input', dtype='int32')
+        #   n-gram size
+        self.n = n
 
         #   random number generators
         if rng is None:
@@ -38,6 +38,8 @@ class LRBM():
             numpy_rng = np.random.RandomState(rng)
         else:
             numpy_rng = rng
+        self.theano_rng = T.shared_randomstreams.RandomStreams(
+            numpy_rng.randint(2 ** 30))
 
         #   a function that initializes and returns
         #   a vocabulary embedding matrix
@@ -51,11 +53,16 @@ class LRBM():
                     vocab_size, repr_size)).astype(theano.config.floatX),
                 name='repr_embedding', borrow=True)
 
-        #   create word embeddings
+        #   create word embeddings and corresponding info
         self.embeddings = map(create_dim_var, vocab_sizes, repr_sizes)
+        self.term_repr_size = sum(repr_sizes)
+        #   calc range of each representation in a 1-gram vector
+        _sizes_cs = np.hstack(([0], np.cumsum(repr_sizes)))
+        self.repr_ranges = np.array(zip(_sizes_cs[:-1], _sizes_cs[1:]),
+                                    dtype='int32')
 
         #   figure out how many visible variables there are
-        _n_vis = n * sum(repr_sizes)
+        _n_vis = n * self.term_repr_size
 
         #   if weights are not provided, initialize them
         self.w = theano.shared(value=np.asarray(
@@ -82,14 +89,18 @@ class LRBM():
         )
 
         #   initialize theano symbolic variables
-        self.init_vars
+        self.init_vars()
 
     def init_vars(self):
+
+        #   input is a matrix of (N, n * len(repr_sizes)) dimensionality
+        #   each row represents an n-gram
+        self.input = T.matrix('input', dtype='uint16')
 
         #   a sym var for input mapped to emebedded representations
         self.input_repr = T.concatenate(
             [embedding[self.input[:, i]]
-             for i, embedding in enumerate(self.embeddings)],
+             for i, embedding in enumerate(self.embeddings * self.n)],
             axis=1)
 
         #   activation probability of hidden variables in the positive phase
@@ -98,7 +109,7 @@ class LRBM():
 
         #   binary activation of hidden variables in the positive phase
         self.hid_act_pos = self.theano_rng.binomial(
-            n=1, p=self.hid_prb, size=self.hid_prb.shape,
+            n=1, p=self.hid_prb_pos, size=self.hid_prb_pos.shape,
             dtype=theano.config.floatX)
 
         #   contrastive divergence steps
@@ -122,8 +133,8 @@ class LRBM():
 
         #   then we prepare the scan function
         #   symbolic variable for the number of contrastive divergences steps
-        self.cd_steps = T.scalar('n_steps', dtype='int8')
-        scan_res, _ = theano.scan(
+        self.cd_steps = T.scalar('n_steps', dtype='int32')
+        scan_res, updates = theano.scan(
             cd_step,
             outputs_info=[None, None, None, self.hid_act_pos],
             n_steps=self.cd_steps)
@@ -132,6 +143,7 @@ class LRBM():
         #   we only need the probabilities for the last step
         self.vis_prb_neg = scan_res[0][-1]
         self.hid_prb_neg = scan_res[2][-1]
+        self.updates = updates
 
         #   finally the cost function we want to reduce
         #   indirectly with contrastive divergence, and directly
@@ -139,132 +151,147 @@ class LRBM():
         self.reconstruction_error = (
             (self.input_repr - self.vis_prb_neg) ** 2).mean()
 
-    def train(self, x_mnb, epochs, eps,
-              steps=1, spars=None, spars_cost=None,
-              weight_cost=1e-4):
+    def train(self, x_train, x_valid, mnb_size, epochs, eps, alpha,
+              steps=1, weight_cost=1e-4):
         """
         Trains the RBM with the given data. Returns a tuple containing
         (costs, times, hid_unit_activation_histograms). All three
         elements are lists, one item per epoch except for 'times' that
         has an extra element (training start time).
 
-        :param x_mnb: Trainset split into minibatches. Thus,
-            x_mnb is an iterable containing numpy arrays of
-            (mnb_N, n_vis) shape, where mnb_N is the number of
-            samples in the minibatch.
-
+        :param x_train: Trainset of (N, n_vis) shape, where N is the
+            number of samples.
+        :param x_valid: Validation set of (N, n_vis) shape, where N is the
+            number of samples.
+        :param mnb_size: Minibatch size, the number of samples in the
+            minibatch.
         :param epochs: Number of epochs (int) of training.
-
         :param eps: Learning rate. Either a float value to be
             used directly, or a callable that determines the
             learning rate based on epoch number and a list of
             error rates.
-
-        :param steps: The number of steps to be used in PCD / CD.
+        :param alpha: float in range [0, 1]. Probability distribution
+            (RBM) learning is multiplied with alpha, while representation
+            learning (word-vectors) is multiplied with (1 - alpha).
+        :param steps: The number of steps to be used in PCD.
             Integer or callable, or a callable that determines the
             learning rate based on epoch number and a list of
             error rates.
-
-        :param spars: Target sparsity of hidden unit activation.
-
-        :param spars_cost: Cost of deviation from the target sparsity.
-
         :param weight_cost: Regularization cost for L2 regularization
             (weight decay).
-
         """
 
-        log.info('Training RBM, epochs: %d, eps: %r, steps:%d, '
-                 'spars:%r, spars_cost:%r',
-                 epochs, eps, steps, spars, spars_cost)
+        log.info('Training RBM, epochs: %d, eps: %r, steps:%d',
+                 epochs, eps, steps)
+
+        #   pack trainset into a shared variable
+        mnb_count = (x_train.shape[0] - 1) / mnb_size + 1
+        x_train = theano.shared(x_train, name='x_train', borrow=True)
+
+        #   *** Creating a function for training the net
+
+        #   first calculate CD "gradients"
+        vis_pos = self.input_repr
+        vis_neg = self.vis_prb_neg
+        hid_pos = self.hid_prb_pos
+        hid_neg = self.hid_prb_neg
+        grad_b_vis = vis_pos.mean(axis=0) - vis_neg.mean(axis=0)
+        grad_b_hid = hid_pos.mean(axis=0) - hid_neg.mean(axis=0)
+        grad_w = (T.dot(vis_pos.T, hid_pos) - T.dot(vis_neg.T, hid_neg)
+                  ) / T.cast(vis_pos.shape[0], theano.config.floatX)
+
+        #   calculate the "gradient" for word embedding modificaiton
+        grad_l = vis_neg - vis_pos
+        #   reorganize the grad_l from (N, n * d) to (N * n, d)
+        grad_l = [grad_l[:, i * self.term_repr_size:
+                         (i + 1) * self.term_repr_size] for i in range(self.n)]
+        grad_l = T.concatenate(grad_l, axis=0)
+
+        #   add regularization to gradients
+        grad_b_vis += weight_cost * self.b_vis
+        grad_b_hid += weight_cost * self.b_hid
+        grad_w += weight_cost * self.w
+
+        #   define a list of updates that happen during training
+        learn_rate = T.scalar("learn_rate", dtype=theano.config.floatX)
+        updates = [
+            (self.w, self.w + learn_rate * alpha * grad_w),
+            (self.b_vis, self.b_vis + learn_rate * alpha * grad_b_vis),
+            (self.b_hid, self.b_hid + learn_rate * alpha * grad_b_hid),
+        ]
+
+        #   make a reoraganization of input from (N, n * d) into (N * n, d)
+        input_stack = [self.input[:, i * len(self.embeddings):
+                                  (i + 1) * len(self.embeddings)] for i in range(self.n)]
+        input_stack = T.concatenate(input_stack, axis=0)
+
+        for i, (emb, rng) in enumerate(zip(self.embeddings, self.repr_ranges)):
+            updates.append((emb, T.inc_subtensor(emb[input_stack[:, i]],
+                                                 (1 - alpha) * grad_l[:, rng[0]:rng[1]])))
+
+        #   finally construct the function that updates parameters
+        index = T.iscalar()
+        train_f = theano.function(
+            [index, learn_rate, self.cd_steps],
+            [self.reconstruction_error],
+            updates=updates + self.updates,
+            givens={
+                self.input: x_train[index * mnb_size: (index + 1) * mnb_size]
+            }
+        )
+        #   ***  Done creating a function for training the net ###
+
+        #   a separate function we will use for validation
+        validate_f = theano.function(
+            [self.input, self.cd_steps],
+            [self.reconstruction_error],
+        )
 
         #   things we'll track through training, for reporting
-        epoch_costs = []
-        epoch_times = []
-        epoch_hid_prbs = np.zeros((epochs, self.n_hid))
+        train_costs_mnb = []
+        train_costs_ep = []
+        valid_costs_ep = []
+        train_times_ep = []
 
         #   iterate through the epochs
+        log.info("Starting training")
         for epoch_ind, epoch in enumerate(range(epochs)):
-            log.info('Starting epoch %d', epoch)
             epoch_t0 = time()
 
             #   calc epsilon for this epoch
             if not isinstance(eps, float):
-                epoch_eps = eps(epoch_ind, epoch_costs)
+                epoch_eps = eps(epoch_ind, train_costs_ep)
             else:
                 epoch_eps = eps
 
+            #   the number of Gibbs sampling steps
+            if isinstance(steps, int):
+                n_steps = steps
+            else:
+                n_steps = steps(epoch, train_costs_ep)
+
             #   iterate through the minibatches
-            batch_costs = []
-            for batch_ind, batch in enumerate(x_mnb):
+            for batch_ind in xrange(mnb_count):
+                train_costs_mnb.append(train_f(batch_ind, epoch_eps, n_steps))
+                log.debug('Batch train cost %.5f', train_costs_mnb[-1])
 
-                #   positive statistics
-                #   _prb suffix indicates activation probabilities
-                #   _act suffix indicates binary activation
-                pos_hid_prb, pos_hid_act = self.hid_given_vis(batch)
+            train_costs_ep.append(
+                np.array(train_costs_mnb)[:-mnb_count].mean())
+            valid_costs_ep.append(validate_f(x_valid))
+            train_times_ep.append(time() - epoch_t0)
 
-                #   the number of Gibbs sampling steps
-                if isinstance(steps, int):
-                    n_steps = steps
-                else:
-                    n_steps = steps(epoch, epoch_costs)
-
-                #   do Gibbs sampling
-                neg_vis_prb, _, neg_hid_prb, neg_hid_act = \
-                    self.steps_given_hid(pos_hid_act, n_steps)
-                #   the scan function returns all steps
-                #   we don't need them all
-                neg_hid_act = neg_hid_act[-1]
-                neg_vis_prb = neg_vis_prb[-1]
-                neg_hid_prb = neg_hid_prb[-1]
-
-                #   gradients based on pos/neg statistics
-                pos_vis = batch.mean(axis=0, dtype=theano.config.floatX)
-                pos_hid = pos_hid_prb.mean(axis=0)
-                grad_b_vis = pos_vis - neg_vis_prb.mean(axis=0)
-                grad_b_hid = pos_hid - neg_hid_prb.mean(axis=0)
-                grad_w = (np.dot(batch.T, pos_hid_prb) - np.dot(
-                    neg_vis_prb.T, neg_hid_prb)) / len(batch)
-
-                #   L2 regularization gradient
-                # grad_b_vis += weight_cost * self.b_vis.get_value()
-                grad_b_hid += weight_cost * self.b_hid.get_value()
-                grad_w += weight_cost * self.w.get_value()
-
-                #   sparsity gradient
-                if((spars is not None) & (spars_cost is not None)
-                        & (spars_cost != 0.0)):
-                    spars_grad = (pos_hid - spars) * spars_cost
-                    grad_w -= np.dot(pos_vis.reshape((self.n_vis, 1)),
-                                     spars_grad.reshape((1, self.n_hid)))
-                    grad_b_hid -= spars_grad
-
-                #   calc cost to be reported
-                batch_costs.append(((neg_vis_prb - batch) ** 2).mean())
-
-                #   hidden unit activation probability reporting
-                #   note that batch.shape[0] is the number of samples in batch
-                epoch_hid_prbs[epoch_ind, :] += pos_hid / batch.shape[0]
-
-                #   updating the params
-                self.w.set_value(self.w.get_value() + epoch_eps * grad_w)
-                self.b_vis.set_value(
-                    self.b_vis.get_value() + epoch_eps * grad_b_vis)
-                self.b_hid.set_value(
-                    self.b_hid.get_value() + epoch_eps * grad_b_hid)
-
-            epoch_costs.append(np.array(batch_costs).mean())
-            epoch_times.append(time() - epoch_t0)
             log.info(
-                'Epoch cost %.5f, duration %.2f sec',
-                epoch_costs[-1],
-                epoch_times[-1]
+                'Epoch %d:\n\ttrain cost: %.5f\n\tvalid cost: %.5f'
+                '\n\tduration %.2f sec',
+                epoch_ind,
+                train_costs_ep[-1],
+                train_times_ep[-1]
             )
 
         log.info('Training duration %.2f min',
-                 (sum(epoch_times)) / 60.0)
+                 (sum(train_times_ep)) / 60.0)
 
-        return epoch_costs, epoch_times, epoch_hid_prbs
+        return train_costs_ep, train_times_ep
 
     def __getstate__(self):
         """
