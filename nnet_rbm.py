@@ -79,7 +79,7 @@ def main():
         -mnb MBN_SIZE : Size of the minibatch, defaults to 2000.
 
     """
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.DEBUG)
     log.info("RBM energy-based neural net language model")
 
     #   get the data handling parameters
@@ -121,8 +121,9 @@ def main():
         mnb, epochs, eps, alpha)
 
     #   store the logs
-    log_name = os.path.join(dir, file + ".log")
-    logging.root.addHandler(logging.FileHandler(log_name))
+    log_file_handler = logging.FileHandler(os.path.join(dir, file + ".log"))
+    log_file_handler.setLevel(logging.INFO)
+    logging.root.addHandler(log_file_handler)
 
     #   default vector representation sizes
     repr_sizes = np.array([200, 150, 100, 10, 10, 10], dtype='uint8')
