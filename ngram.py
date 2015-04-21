@@ -21,6 +21,19 @@ _NGRAM_DIR = 'ngram_models'
 
 class NgramModel():
 
+    #   the directory where ngrams are stored
+    @staticmethod
+    def dir(tree, ftr_use, ts_reduction, min_occ, min_files):
+        dir = "%s_features-%s_data-subset_%r-min_occ_%r-min_files_%r" % (
+            "tree" if tree else "linear",
+            "".join([str(int(b)) for b in ftr_use]),
+            ts_reduction, min_occ, min_files)
+        dir = os.path.join(_NGRAM_DIR, dir)
+        if not os.path.exists(dir):
+            os.makedirs(dir)
+
+        return dir
+
     """
     An ngram based language model. Supports linear
     and dependancy-syntax-based ngrams.
@@ -173,20 +186,21 @@ class NgramModel():
         self.prob_normalizer = self.count_sum + \
             self.lmbd * np.prod(map(float, counts.shape))
 
-    def probability(self, ngrams):
+    def probability(self, ngrams, return_mean=False):
         """
         Calculates and returns the probability of
-        a series of tokens.
+        a series of ngrams.
 
         :param tokens: A standard tuple of tokens:
             (feature_1, feature_2, ... , parent_inds)
             as returned by 'data.process_string' function.
+        :return: numpy array of shape (ngram_count, 1)
         """
         _, multipliers = self.reduced_ngrams_mul()
         ngrams = np.dot(ngrams, multipliers.T)
         probs = map(lambda ind: self.counts[tuple(ind)], ngrams)
-        probs = [(e if isinstance(e, float) else e.sum()) + 1 for e in probs]
-        return np.prod(probs) / self.prob_normalizer
+        probs = [(e if isinstance(e, float) else e.sum()) + 1. for e in probs]
+        return np.array(probs) / self.prob_normalizer
 
     def __str__(self):
         return "%d-grams_%.2f-smoothing" % (self.n, self.lmbd)
@@ -291,13 +305,7 @@ def main():
     tree = '-t' in sys.argv
 
     #   the directory where ngrams are stored
-    dir = "%s_features-%s_data-subset_%r-min_occ_%r-min_files_%r" % (
-        "tree" if tree else "linear",
-        "".join([str(int(b)) for b in ftr_use]),
-        ts_reduction, min_occ, min_files)
-    dir = os.path.join(_NGRAM_DIR, dir)
-    if not os.path.exists(dir):
-        os.makedirs(dir)
+    dir = NgramModel.dir(tree, ftr_use, ts_reduction, min_occ, min_files)
 
     #   store logs
     if '-e' in sys.argv or '-es' in sys.argv:

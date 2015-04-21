@@ -201,9 +201,9 @@ class LRBM():
         grad_l = T.concatenate(grad_l, axis=0)
 
         #   add regularization to gradients
-        grad_b_vis += weight_cost * self.b_vis
-        grad_b_hid += weight_cost * self.b_hid
-        grad_w += weight_cost * self.w
+        grad_b_vis -= weight_cost * self.b_vis
+        grad_b_hid -= weight_cost * self.b_hid
+        grad_w -= weight_cost * self.w
 
         #   define a list of updates that happen during training
         eps_th = T.scalar("eps", dtype=theano.config.floatX)
@@ -252,7 +252,9 @@ class LRBM():
         #   iterate through the epochs
         log.info("Starting training")
         #   after each epoch, call a callback if provided
-        epoch_callback = getattr(self, "epoch_callback", lambda a, b: a)
+        epoch_callback = getattr(self, "epoch_callback", lambda a, b: None)
+        mnb_callback = getattr(self, "mnb_callback", lambda a, b, c: None)
+        epoch_callback(self, -1)
         for epoch_ind, epoch in enumerate(range(epochs)):
             epoch_t0 = time()
 
@@ -267,6 +269,7 @@ class LRBM():
                 train_costs_mnb.append(train_f(batch_ind, epoch_eps))
                 log.debug('Mnb %d train cost %.5f',
                           batch_ind, train_costs_mnb[-1])
+                mnb_callback(self, epoch_ind, batch_ind)
 
             train_costs_ep.append(
                 np.array(train_costs_mnb)[-mnb_count:].mean())
