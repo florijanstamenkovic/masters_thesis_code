@@ -23,10 +23,10 @@ class LRBM():
     vectors.
     """
 
-    def __init__(self, n, vocab_sizes, repr_sizes, n_hid, rng=None):
+    def __init__(self, n, vocab_size, repr_size, n_hid, rng=None):
 
-        log.info("Creating an LRBM, n=%d, vocab_sizes=%r, repr_sizes=%r"
-                 "n_hid=%d", n, vocab_sizes, repr_sizes, n_hid)
+        log.info("Creating an LRBM, n=%d, vocab_size=%r, repr_size=%r"
+                 "n_hid=%d", n, vocab_size, repr_size, n_hid)
 
         #   n-gram size
         self.n = n
@@ -41,28 +41,15 @@ class LRBM():
         self.theano_rng = T.shared_randomstreams.RandomStreams(
             numpy_rng.randint(2 ** 30))
 
-        #   a function that initializes and returns
-        #   a vocabulary embedding matrix
-        def create_dim_var(vocab_size, repr_size):
-            """
-            :param vocab_size: Vocabulary length.
-            :param repr_size: Dimensionality of the representation vector.
-            """
-            return theano.shared(
-                value=numpy_rng.uniform(-1e-3, 1e-3, size=(
-                    vocab_size, repr_size)).astype(theano.config.floatX),
-                name='repr_embedding', borrow=True)
-
-        #   create word embeddings and corresponding info
-        self.embeddings = map(create_dim_var, vocab_sizes, repr_sizes)
-        self.term_repr_size = sum(repr_sizes)
-        #   calc range of each representation in a 1-gram vector
-        _sizes_cs = np.hstack(([0], np.cumsum(repr_sizes)))
-        self.repr_ranges = np.array(zip(_sizes_cs[:-1], _sizes_cs[1:]),
-                                    dtype='int32')
+        #   create word embedding and corresponding info
+        self.repr_size = repr_size
+        self.embedding = theano.shared(
+            value=numpy_rng.uniform(-1e-3, 1e-3, size=(
+                vocab_size, repr_size)).astype(theano.config.floatX),
+            name='repr_embedding', borrow=True)
 
         #   figure out how many visible variables there are
-        _n_vis = n * self.term_repr_size
+        _n_vis = n * repr_size
 
         #   if weights are not provided, initialize them
         self.w = theano.shared(value=np.asarray(
@@ -96,15 +83,12 @@ class LRBM():
         Initializes Theano expressions used in training and evaluation.
         """
 
-        #   input is a matrix of (N, n * len(repr_sizes)) dimensionality
+        #   input is a matrix of (N, n * len(repr_size)) dimensionality
         #   each row represents an n-gram
         self.input = T.matrix('input', dtype='uint16')
 
         #   a sym var for input mapped to emebedded representations
-        self.input_repr = T.concatenate(
-            [embedding[self.input[:, i]]
-             for i, embedding in enumerate(self.embeddings * self.n)],
-            axis=1)
+        self.input_repr = self.embedding[self.input].flatten(2)
 
         #   activation probability, hidden layer, positive phase
         self.hid_prb_pos = T.nnet.sigmoid(
@@ -115,46 +99,52 @@ class LRBM():
             n=1, p=self.hid_prb_pos, size=self.hid_prb_pos.shape,
             dtype=theano.config.floatX)
 
-        #   activation probability, visible layer, negative phase
-        self.vis_prb_neg = T.nnet.sigmoid(
-            T.dot(self.hid_act_pos, self.w.T) + self.b_vis)
+        #   activation, visible layer, negative phase
+        #   only the conditioned term gets updated
+        _vis_neg = T.nnet.sigmoid(
+            T.dot(self.hid_act_pos,
+                  self.w[:self.repr_size].T) + self.b_vis[:self.repr_size])
+        #   but we need the whole visible vector, for the updates
+        self.vis_neg = T.concatenate(
+            (_vis_neg, self.input_repr[:, self.repr_size:]), axis=1)
 
-        #   binary activation, visible layer, negative phase
-        self.vis_act_neg = self.theano_rng.binomial(
-            n=1, p=self.vis_prb_neg, size=self.vis_prb_neg.shape,
-            dtype=theano.config.floatX)
+        #   a function that returns the energy symbolic variable
+        #   given visible and hidden unit symbolic variables
+        def energy(visible, hidden):
+            return -T.dot(visible, self.b_vis.T) \
+                - T.dot(hidden, self.b_hid.T) \
+                - (T.dot(visible, self.w) * hidden).sum(axis=1)
 
-        #   activation probability, hidden layer, negative phase
+        #   vocab probabilities p(w|h)
+        #   we need to use scan to calculate it
+        #   first define the function for each scan step
+        # def prob(hidden):
+        #     hidden = T.tile()
+        #     _energies = energy(self.input_repr, hidden)
+
+            #   activation probability, hidden layer, negative phase
         self.hid_prb_neg = T.nnet.sigmoid(
-            T.dot(self.vis_act_neg, self.w) + self.b_hid)
-
-        #   binary activation, hidden layer, negative phase
-        self.hid_act_neg = self.theano_rng.binomial(
-            n=1, p=self.hid_prb_neg, size=self.hid_prb_neg.shape,
-            dtype=theano.config.floatX)
+            T.dot(self.vis_neg, self.w) + self.b_hid)
 
         #   standard energy of the input
-        self.energy = -T.dot(self.input_repr, self.b_vis.T) \
-            - T.dot(self.hid_prb_pos, self.b_hid.T) \
-            - (T.dot(self.input_repr, self.w) * self.hid_prb_pos).sum(axis=1)
+        self.energy = energy(self.input_repr, self.hid_prb_pos)
 
         #   reconstruction error that we want to reduce
         #   we use contrastive divergence to model the distribution
         #   and optimize the vocabulary
         self.reconstruction_error = (
-            (self.input_repr - self.vis_prb_neg) ** 2).mean()
+            (self.input_repr - self.vis_neg) ** 2).mean()
 
     def mean_log_lik(self, x):
         """
         Calculates the mean log-loss of the given samples.
         Note that calculation complexity is O(v1 * v2 * v3 * ...),
         where vX is vocabulary size of feature X, for each used feature.
-        Currently only supported for one-feature-nets.
 
         :param x: Samples of shape (N, n * len(used_ftrs)).
         :return: Mean log loss.
         """
-        vocab_len = self.embeddings[0].get_value(borrow=True).shape[0]
+        vocab_len = self.embedding.get_value(borrow=True).shape[0]
         energy_f = theano.function([self.input], self.energy)
 
         def _probability(sample):
@@ -165,7 +155,7 @@ class LRBM():
                 np.arange(vocab_len, dtype=sample.dtype).reshape(vocab_len, 1),
                 np.tile(sample[1:], (vocab_len, 1))))
             #   calculate their energy, normalize, and exp
-            _partition_en = energy_f(_partition).astype('int64')
+            _partition_en = energy_f(_partition).astype('float64')
             _partition_en -= _partition_en.min() + 400
             _partition_exp = np.exp(-_partition_en)
             return _partition_exp[sample[0]] / _partition_exp.sum()
@@ -214,7 +204,7 @@ class LRBM():
 
         #   first calculate CD "gradients"
         vis_pos = self.input_repr
-        vis_neg = self.vis_prb_neg
+        vis_neg = self.vis_neg
         hid_pos = self.hid_prb_pos
         hid_neg = self.hid_prb_neg
         grad_b_vis = vis_pos.mean(axis=0) - vis_neg.mean(axis=0)
@@ -222,12 +212,15 @@ class LRBM():
         grad_w = (T.dot(vis_pos.T, hid_pos) - T.dot(vis_neg.T, hid_neg)
                   ) / T.cast(vis_pos.shape[0], theano.config.floatX)
 
-        #   calculate the "gradient" for word embedding modificaiton
-        grad_l = vis_neg - vis_pos
+        #   calculate the "gradient" for word embedding modification
+        grad_l = T.dot(hid_pos, self.w.T) - T.dot(hid_neg, self.w.T)
         #   reorganize the grad_l from (N, n * d) to (N * n, d)
-        grad_l = [grad_l[:, i * self.term_repr_size:
-                         (i + 1) * self.term_repr_size] for i in range(self.n)]
+        grad_l = [grad_l[:, i * self.repr_size: (i + 1) * self.repr_size]
+                  for i in xrange(self.n)]
         grad_l = T.concatenate(grad_l, axis=0)
+        #   add embedding optimization to updates
+        #   reorganize input from (N, n) into (N * n)
+        input_stack = self.input.dimshuffle((1, 0)).flatten()
 
         #   add regularization to gradients
         grad_b_vis -= weight_cost * self.b_vis
@@ -240,19 +233,9 @@ class LRBM():
             (self.w, self.w + eps_th * alpha * grad_w),
             (self.b_vis, self.b_vis + eps_th * alpha * grad_b_vis),
             (self.b_hid, self.b_hid + eps_th * alpha * grad_b_hid),
+            (self.embedding, T.inc_subtensor(
+                self.embedding[input_stack], eps_th * (1 - alpha) * grad_l))
         ]
-
-        #   make a reoraganization of input from (N, n * d) into (N * n, d)
-        emb_count = len(self.embeddings)
-        input_stack = [self.input[:, i * emb_count: (i + 1) * emb_count]
-                       for i in range(self.n)]
-        input_stack = T.concatenate(input_stack, axis=0)
-
-        #   generate updates for embedded representations
-        for i, (emb, rng) in enumerate(zip(self.embeddings, self.repr_ranges)):
-            updates.append((emb, T.inc_subtensor(
-                emb[input_stack[:, i]],
-                eps_th * (1 - alpha) * grad_l[:, rng[0]:rng[1]])))
 
         #   finally construct the function that updates parameters
         index = T.iscalar()

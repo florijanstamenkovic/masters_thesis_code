@@ -25,43 +25,33 @@ _DIR = 'nnet_models'
 log = logging.getLogger(__name__)
 
 
-def random_ngrams(ngrams, feature_sizes, terms=1, shuffle=False,
-                  distributions=None):
+def random_ngrams(ngrams, vocab_size, all=False, dist=None, shuffle=False):
     """
     Given an array of ngrams, creates a copy of that array
     with some terms (columns) randomized.
 
     :param ngrams: A numpy array of ngrams, of shape (N, n),
         where N is number of ngrams, and n is ngram length.
-    :param feature_sizes: Vocabulary size for features used
-        in each ngram term.
-    :param terms: How many terms in the ngram should be randomized.
+    :param vocab_size: Vocabulary size.
+    :param all: If all ngram terms should be randomized, or just
+        the conditioned one.
     :param shuffle: If randomization should be done by shuffling,
         or by sampling.
-    :param distributions:
+    :param dist: Probability distribution of words in the vocabulary.
+        If None, uniform sampling is used.
+
     """
-
-    if distributions is None:
-        distributions = [None] * len(feature_sizes)
-
-    #   randomized ngrams
     r_val = np.array(ngrams)
 
     #   iterate through the terms that need replacing
-    for term in xrange(terms):
+    for term in xrange(ngrams.shape[1] if all else 1):
 
         #   iterate through the features of the term
-        for ftr_ind, (feature_size, dist) in enumerate(
-                zip(feature_sizes, distributions)):
-
-            ftr_ind += term * len(feature_sizes)
-
-            if shuffle:
-                np.random.shuffle(r_val[:, ftr_ind])
-            else:
-                r_val[:, ftr_ind] = np.random.choice(
-                    feature_size, ngrams.shape[0],
-                    p=dist).astype('uint16')
+        if shuffle:
+            np.random.shuffle(r_val[:, term])
+        else:
+            r_val[:, term] = np.random.choice(
+                vocab_size, ngrams.shape[0], p=dist).astype('uint16')
 
     return r_val
 
@@ -138,6 +128,9 @@ def main():
         lambda s: s.lower() in ["1", "true", "yes", "t", "y"], s)
     ftr_use = np.array(util.argv('-u', ft_format("001000"), ft_format))
 
+    #   nnet rbm-s only support one-feature ngrams
+    assert ftr_use.sum() == 1
+
     #   the directory that stores ngram models we compare against
     ngram_dir = NgramModel.dir(use_tree, ftr_use, ts_reduction,
                                min_occ, min_files)
@@ -155,6 +148,8 @@ def main():
         n, ftr_use, use_tree, subset=ts_reduction,
         min_occ=min_occ, min_files=min_files)
     used_ftr_sizes = feature_sizes[ftr_use]
+    #   remember, we only use one feature
+    vocab_size = used_ftr_sizes[0]
     log.info("Data loaded, %d ngrams", ngrams.shape[0])
 
     #   split data into sets
@@ -163,25 +158,20 @@ def main():
     #   generate a version of the validation set that has
     #   the first term (the conditioned one) randomized
     #   w.r.t. unigram distribution
+    #   so first create the unigram distribution
     unigrams_data = data.load_ngrams(1, ftr_use, False, subset=ts_reduction,
                                      min_occ=min_occ, min_files=min_files)[0]
-    #   generate unigram distributions for each feature individually
-    used_ftrs_one_hot = [
-        x for x in np.eye(len(ftr_use), dtype=bool) if x[ftr_use].any()]
-    unigrams_dist = [NgramModel.get(1, False, ftr, feature_sizes,
-                                    unigrams_data, ngram_dir, lmbd=0.0) for
-                     ftr in used_ftrs_one_hot]
-    unigrams_dist = [m.probability(np.arange(l).reshape(l, 1)) for
-                     m, l in zip(unigrams_dist, used_ftr_sizes)]
-    for ud in unigrams_dist:
-        ud /= ud.sum()
-    #   finally, generate a validation set with randomized conditioned term
-    x_valid_r = random_ngrams(x_valid, used_ftr_sizes,
-                              distributions=unigrams_dist)
+    unigrams_data = NgramModel.get(1, False, ftr_use, feature_sizes,
+                                   unigrams_data, ngram_dir, lmbd=0.0)
+    unigrams_dist = unigrams_data.probability(
+        np.arange(vocab_size).reshape(vocab_size, 1))
+    unigrams_dist /= unigrams_dist.sum()
+    #   finally, generate validation sets with randomized term
+    x_valid_r = random_ngrams(x_valid, vocab_size, False, unigrams_dist)
     #   also generate a validation set with all terms randomized
-    x_valid_rr = random_ngrams(x_valid, used_ftr_sizes, n,
-                               distributions=unigrams_dist)
-    x_valid_rrr = random_ngrams(x_valid, used_ftr_sizes, n)
+    x_valid_rr = random_ngrams(x_valid, vocab_size, True, unigrams_dist)
+    #   and finally one with uniform vocabulary distribution
+    x_valid_rrr = random_ngrams(x_valid, vocab_size, True)
 
     #   the directory for this model
     dir = "%s_%d-gram_features-%s_data-subset_%r-min_occ_%r-min_files_%r" % (
@@ -200,9 +190,6 @@ def main():
     log_file_handler = logging.FileHandler(os.path.join(dir, file + ".log"))
     log_file_handler.setLevel(logging.INFO)
     logging.root.addHandler(log_file_handler)
-
-    #   default vector representation sizes
-    repr_sizes = np.array([d, d, d, 10, 10, 10], dtype='uint8')
 
     #   get the ngram probability for the validation set
     #   first load the relevant ngram model
@@ -299,10 +286,8 @@ def main():
                  lrbm.b_hid.get_value(borrow=True).std(),
                  lrbm.b_vis.get_value(borrow=True).mean(),
                  lrbm.b_vis.get_value(borrow=True).std(),
-                 np.mean([emb.get_value(borrow=True).mean()
-                          for emb in lrbm.embeddings]),
-                 np.mean([emb.get_value(borrow=True).std()
-                          for emb in lrbm.embeddings])
+                 lrbm.embedding.get_value(borrow=True).std(),
+                 lrbm.embedding.get_value(borrow=True).mean()
                  )
 
         #   log info about the sentence completion challenge
@@ -318,7 +303,7 @@ def main():
         )
 
     log.info("Creating LRBM")
-    lrbm = LRBM(n, used_ftr_sizes, repr_sizes[ftr_use], n_hid, 12345)
+    lrbm = LRBM(n, vocab_size, d, n_hid, 12345)
     lrbm.mnb_callback = mnb_callback
     lrbm.epoch_callback = epoch_callback
     lrbm.train(x_train, x_valid, mnb, epochs, eps, alpha)
