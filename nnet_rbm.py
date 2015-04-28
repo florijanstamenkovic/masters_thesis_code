@@ -25,21 +25,45 @@ _DIR = 'nnet_models'
 log = logging.getLogger(__name__)
 
 
-def random_ngrams(ngrams, feature_sizes, terms=1, shuffle=True):
+def random_ngrams(ngrams, feature_sizes, terms=1, shuffle=False,
+                  distributions=None):
+    """
+    Given an array of ngrams, creates a copy of that array
+    with some terms (columns) randomized.
 
-    n = ngrams.shape[1] / len(feature_sizes)
+    :param ngrams: A numpy array of ngrams, of shape (N, n),
+        where N is number of ngrams, and n is ngram length.
+    :param feature_sizes: Vocabulary size for features used
+        in each ngram term.
+    :param terms: How many terms in the ngram should be randomized.
+    :param shuffle: If randomization should be done by shuffling,
+        or by sampling.
+    :param distributions:
+    """
 
-    random_ngrams = np.array(ngrams)
+    if distributions is None:
+        distributions = [None] * len(feature_sizes)
+
+    #   randomized ngrams
+    r_val = np.array(ngrams)
+
+    #   iterate through the terms that need replacing
     for term in xrange(terms):
-        for feature, feature_size in enumerate(feature_sizes):
-            ftr_ind = (n - 1 - term) * len(feature_sizes)
-            if shuffle:
-                np.random.shuffle(random_ngrams[:, ftr_ind])
-            else:
-                random_ngrams[:, ftr_ind] = np.random.randint(
-                    0, feature_sizes, ngrams.shape[0]).astype('uint16')
 
-    return random_ngrams
+        #   iterate through the features of the term
+        for ftr_ind, (feature_size, dist) in enumerate(
+                zip(feature_sizes, distributions)):
+
+            ftr_ind += term * len(feature_sizes)
+
+            if shuffle:
+                np.random.shuffle(r_val[:, ftr_ind])
+            else:
+                r_val[:, ftr_ind] = np.random.choice(
+                    feature_size, ngrams.shape[0],
+                    p=dist).astype('uint16')
+
+    return r_val
 
 
 def dataset_split(x, validation=0.05, test=0.05, rng=None):
@@ -114,6 +138,10 @@ def main():
         lambda s: s.lower() in ["1", "true", "yes", "t", "y"], s)
     ftr_use = np.array(util.argv('-u', ft_format("001000"), ft_format))
 
+    #   the directory that stores ngram models we compare against
+    ngram_dir = NgramModel.dir(use_tree, ftr_use, ts_reduction,
+                               min_occ, min_files)
+
     #   get nnet training parameters
     epochs = util.argv('-ep', 20, int)
     alpha = util.argv('-a', 0.5, float)
@@ -132,6 +160,29 @@ def main():
     #   split data into sets
     x_train, x_valid, x_test = dataset_split(ngrams, 0.05, 0.05, rng=12345)
 
+    #   generate a version of the validation set that has
+    #   the first term (the conditioned one) randomized
+    #   w.r.t. unigram distribution
+    unigrams_data = data.load_ngrams(1, ftr_use, False, subset=ts_reduction,
+                                     min_occ=min_occ, min_files=min_files)[0]
+    #   generate unigram distributions for each feature individually
+    used_ftrs_one_hot = [
+        x for x in np.eye(len(ftr_use), dtype=bool) if x[ftr_use].any()]
+    unigrams_dist = [NgramModel.get(1, False, ftr, feature_sizes,
+                                    unigrams_data, ngram_dir, lmbd=0.0) for
+                     ftr in used_ftrs_one_hot]
+    unigrams_dist = [m.probability(np.arange(l).reshape(l, 1)) for
+                     m, l in zip(unigrams_dist, used_ftr_sizes)]
+    for ud in unigrams_dist:
+        ud /= ud.sum()
+    #   finally, generate a validation set with randomized conditioned term
+    x_valid_r = random_ngrams(x_valid, used_ftr_sizes,
+                              distributions=unigrams_dist)
+    #   also generate a validation set with all terms randomized
+    x_valid_rr = random_ngrams(x_valid, used_ftr_sizes, n,
+                               distributions=unigrams_dist)
+    x_valid_rrr = random_ngrams(x_valid, used_ftr_sizes, n)
+
     #   the directory for this model
     dir = "%s_%d-gram_features-%s_data-subset_%r-min_occ_%r-min_files_%r" % (
         "tree" if use_tree else "linear", n,
@@ -142,7 +193,7 @@ def main():
         os.makedirs(dir)
 
     #   filename base for this model
-    file = "nhid-%d_d-%d_train_mnb-%d_epochs-%d_eps-%.3f_alpha-%.1f" % (
+    file = "nhid-%d_d-%d_train_mnb-%d_epochs-%d_eps-%.5f_alpha-%.1f" % (
         n_hid, d, mnb, epochs, eps, alpha)
 
     #   store the logs
@@ -154,46 +205,78 @@ def main():
     repr_sizes = np.array([d, d, d, 10, 10, 10], dtype='uint8')
 
     #   get the ngram probability for the validation set
-    ngram_dir = NgramModel.dir(
-        use_tree, ftr_use, ts_reduction, min_occ, min_files)
-    ngram_model = NgramModel.get(
-        n, use_tree, ftr_use, feature_sizes, x_train, ngram_dir)
+    #   first load the relevant ngram model
+    ngram_model = NgramModel.get(n, use_tree, ftr_use, feature_sizes,
+                                 x_train, ngram_dir)
+    #   then calculate validation set probability
+    #   and also the probability of validation set with randomized
+    #   conditioned term
     p_ngram = ngram_model.probability(x_valid)
-    p_ngram_rand = ngram_model.probability(
-        random_ngrams(x_valid, used_ftr_sizes))
-    p_rand = ngram_model.probability(
-        random_ngrams(x_valid, used_ftr_sizes, n))
+    p_ngram_r = ngram_model.probability(x_valid_r)
+    p_ngram_rr = ngram_model.probability(x_valid_rr)
+    p_ngram_rrr = ngram_model.probability(x_valid_rrr)
+    log.info("Ngram model ln(p_mean(x_valid)): %.3f, ln(p_mean(x_valid_r)):"
+             " %3f, ln(p_mean(x_valid_rr)): %3f, ln(p_mean(x_valid_rrr)): %3f",
+             np.log(p_ngram.mean()), np.log(p_ngram_r.mean()),
+             np.log(p_ngram_rr.mean()), np.log(p_ngram_rrr.mean()))
     log.info("Ngram model p(x_valid) / p(x_valid_rand) mean: %.3f, "
              "p(x_valid) / p(rand) mean: %.3f,",
-             (p_ngram / p_ngram_rand).mean(),
-             (p_ngram / p_rand).mean())
-    log.info("Ngram model ll(x_valid) / ll(x_valid_rand) mean: %.3f, "
-             "ll(x_valid) / ll(rand) mean: %.3f,",
-             (np.log(p_ngram) - np.log(p_ngram_rand)).mean(),
-             (np.log(p_ngram) - np.log(p_rand)).mean())
+             (p_ngram / p_ngram_r).mean(),
+             (p_ngram / p_ngram_rr).mean())
+    log.info("Ngram model ll_mean(x_valid): %.3f, ll_mean(x_valid_r): %3f, "
+             "ll_mean(x_valid_rr): %3f, ll_mean(x_valid_rrr): %3f",
+             np.log(p_ngram).mean(), np.log(p_ngram_r).mean(),
+             np.log(p_ngram_rr).mean(), np.log(p_ngram_rrr).mean())
+    log.info("Ngram model ll(x_valid) / ll("
+             "x_valid_rand) mean: %.3f, ll(x_valid) / ll(rand) mean: %.3f,",
+             (np.log(p_ngram) - np.log(p_ngram_r)).mean(),
+             (np.log(p_ngram) - np.log(p_ngram_rr)).mean())
 
     def validation_energy(lrbm):
+        """
+        For the given RBM this function calculates the energies
+        of the validation set and it's randomized versions.
 
+        Returns a tuple: (
+            validation set energy,
+            randomized (one term) validation set energy,
+            randomized (all terms) validation set energy,
+            log-likelihood ratio of validation and randomized (one term) sets
+        )
+        """
         energy_f = theano.function([lrbm.input], lrbm.energy)
 
         x_valid_en = energy_f(x_valid)
-        x_valid_rand_en = energy_f(random_ngrams(x_valid, used_ftr_sizes))
-        rand_en = energy_f(random_ngrams(x_valid, used_ftr_sizes, n))
+        x_valid_en_r = energy_f(x_valid_r)
+        x_valid_en_rr = energy_f(x_valid_rr)
 
-        return (x_valid_en.mean(), x_valid_rand_en.mean(), rand_en.mean(),
-                (-x_valid_en + x_valid_rand_en).mean())
+        return (x_valid_en.mean(), x_valid_en_r.mean(), x_valid_en_rr.mean(),
+                (-x_valid_en + x_valid_en_r).mean())
 
+    #   we will plot log-lik ratios for every 5 minibatches
+    #   we will also plot true mean log-lik
     llratios_mnb = []
+    llmean_mnb = []
+    llmean_r_mnb = []
 
     def mnb_callback(lrbm, epoch, mnb):
+        """
+        Callback function called after every minibatch.
+        """
         if mnb == 0 or mnb % 5:
             return
         validation_energies = validation_energy(lrbm)
         llratios_mnb.append(validation_energies[-1])
         log.info(
-            'Epoch %d, mnb: %d, x_valid energy: %.2f, x_valid_rand energy: %.2f'
-            ', rand energy: %.2f, [-x_valid_en + x_valid_rand].mean(): %.3f',
+            'Epoch %d, mnb: %d, x_valid_en: %.2f, x_valid_en_r: %.2f, '
+            'x_valid_en_rr: %.2f, [-x_valid_en + x_valid_en_r].mean(): %.3f',
             epoch, mnb, *validation_energies)
+
+        llmean_mnb.append(lrbm.mean_log_lik(x_valid[:50]))
+        llmean_r_mnb.append(lrbm.mean_log_lik(x_valid_r[:50]))
+        log.info('Epoch %d, mnb: %d, x_valid mean-log-lik: %.5f, '
+                 'x_valid_r mean-log-lik: %.5f',
+                 epoch, mnb, llmean_mnb[-1], llmean_r_mnb[-1])
 
     def epoch_callback(lrbm, epoch):
 
@@ -202,8 +285,8 @@ def main():
 
         #   get the net energy on the validation set and a randomized set
         log.info(
-            'Epoch %d x_valid energy: %.2f, x_valid_rand energy: %.2f'
-            ', rand energy: %.2f, [-x_valid_en + x_valid_rand].mean(): %.3f',
+            'Epoch %d, x_valid_en: %.2f, x_valid_en_r: %.2f, '
+            'x_valid_en_rr: %.2f, [-x_valid_en + x_valid_en_r].mean(): %.3f',
             epoch, *validation_energy(lrbm))
 
         #   log some info about parameters
@@ -240,12 +323,19 @@ def main():
     lrbm.epoch_callback = epoch_callback
     lrbm.train(x_train, x_valid, mnb, epochs, eps, alpha)
 
-    #   plot llratios
-    plt.figure(figsize=(12, 9), dpi=72)
-    plt.plot(np.arange(len(llratios_mnb)) * 5 + 1, llratios_mnb)
-    plt.xlabel("Minibatch")
-    plt.ylabel("log-lik ratio")
+    #   plot llratios and llmean
+    fig, ax1 = plt.subplots()
+    x = (np.arange(len(llratios_mnb))) * 5
+
+    ax2 = ax1.twinx()
+    ax1.plot(x, llratios_mnb, 'g-')
+    ax1.set_ylabel('log-lik ratio', color='g')
+    ax2.plot(x, llmean_mnb, 'b-', label='ll(valid_x)')
+    ax2.plot(x, llmean_r_mnb, 'b--', label='ll(valid_x_r)')
+    ax2.set_ylabel('log-lik mean', color='b')
+    ax1.set_xlabel('minibatch')
     plt.grid()
+    plt.legend(loc=2)
     plt.savefig(file + ".pdf")
 
 

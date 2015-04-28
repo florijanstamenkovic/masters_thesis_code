@@ -133,7 +133,7 @@ class LRBM():
             n=1, p=self.hid_prb_neg, size=self.hid_prb_neg.shape,
             dtype=theano.config.floatX)
 
-        #   model energy for a given input
+        #   standard energy of the input
         self.energy = -T.dot(self.input_repr, self.b_vis.T) \
             - T.dot(self.hid_prb_pos, self.b_hid.T) \
             - (T.dot(self.input_repr, self.w) * self.hid_prb_pos).sum(axis=1)
@@ -143,6 +143,35 @@ class LRBM():
         #   and optimize the vocabulary
         self.reconstruction_error = (
             (self.input_repr - self.vis_prb_neg) ** 2).mean()
+
+    def mean_log_lik(self, x):
+        """
+        Calculates the mean log-loss of the given samples.
+        Note that calculation complexity is O(v1 * v2 * v3 * ...),
+        where vX is vocabulary size of feature X, for each used feature.
+        Currently only supported for one-feature-nets.
+
+        :param x: Samples of shape (N, n * len(used_ftrs)).
+        :return: Mean log loss.
+        """
+        vocab_len = self.embeddings[0].get_value(borrow=True).shape[0]
+        energy_f = theano.function([self.input], self.energy)
+
+        def _probability(sample):
+
+            #   create samples for each vocab word
+            #   given the conditioning part of the sample
+            _partition = np.hstack((
+                np.arange(vocab_len, dtype=sample.dtype).reshape(vocab_len, 1),
+                np.tile(sample[1:], (vocab_len, 1))))
+            #   calculate their energy, normalize, and exp
+            _partition_en = energy_f(_partition).astype('int64')
+            _partition_en -= _partition_en.min() + 400
+            _partition_exp = np.exp(-_partition_en)
+            return _partition_exp[sample[0]] / _partition_exp.sum()
+
+        _probs = map(_probability, x)
+        return np.mean(np.log(_probs))
 
     def train(self, x_train, x_valid, mnb_size, epochs, eps, alpha,
               steps=1, weight_cost=1e-4):
@@ -255,6 +284,7 @@ class LRBM():
         epoch_callback = getattr(self, "epoch_callback", lambda a, b: None)
         mnb_callback = getattr(self, "mnb_callback", lambda a, b, c: None)
         epoch_callback(self, -1)
+        mnb_callback(self, -1, -1)
         for epoch_ind, epoch in enumerate(range(epochs)):
             epoch_t0 = time()
 

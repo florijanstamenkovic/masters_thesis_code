@@ -186,7 +186,7 @@ class NgramModel():
         self.prob_normalizer = self.count_sum + \
             self.lmbd * np.prod(map(float, counts.shape))
 
-    def probability(self, ngrams, return_mean=False):
+    def probability(self, ngrams):
         """
         Calculates and returns the probability of
         a series of ngrams.
@@ -198,8 +198,12 @@ class NgramModel():
         """
         _, multipliers = self.reduced_ngrams_mul()
         ngrams = np.dot(ngrams, multipliers.T)
+
         probs = map(lambda ind: self.counts[tuple(ind)], ngrams)
-        probs = [(e if isinstance(e, float) else e.sum()) + 1. for e in probs]
+        #   depending on n, counts can be returned as arrays or floats
+        #   so take care to convert to float
+        probs = [(p if isinstance(p, float) else p.sum()) + self.lmbd
+                 for p in probs]
         return np.array(probs) / self.prob_normalizer
 
     def __str__(self):
