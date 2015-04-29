@@ -265,6 +265,11 @@ def main():
                  'x_valid_r mean-log-lik: %.5f',
                  epoch, mnb, llmean_mnb[-1], llmean_r_mnb[-1])
 
+        #   try out the new probability function
+        valid_x_p = theano.function([lrbm.input], lrbm.probability)(x_valid[:50])
+        log.info('Epoch %d, mnb: %d, x_valid mean-log-lik-2: %.5f',
+                 epoch, mnb, np.log(valid_x_p).mean())
+
     def epoch_callback(lrbm, epoch):
 
         #   we'll use the net's energy function to eval q_groups

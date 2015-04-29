@@ -43,6 +43,7 @@ class LRBM():
 
         #   create word embedding and corresponding info
         self.repr_size = repr_size
+        self.vocab_size = vocab_size
         self.embedding = theano.shared(
             value=numpy_rng.uniform(-1e-3, 1e-3, size=(
                 vocab_size, repr_size)).astype(theano.config.floatX),
@@ -85,14 +86,17 @@ class LRBM():
 
         #   input is a matrix of (N, n * len(repr_size)) dimensionality
         #   each row represents an n-gram
-        self.input = T.matrix('input', dtype='uint16')
+        input = T.matrix('input', dtype='uint16')
+        self.input = input
+        emb = self.embedding
 
         #   a sym var for input mapped to emebedded representations
-        self.input_repr = self.embedding[self.input].flatten(2)
+        input_repr = emb[input].flatten(2)
+        self.input_repr = input_repr
 
         #   activation probability, hidden layer, positive phase
         self.hid_prb_pos = T.nnet.sigmoid(
-            T.dot(self.input_repr, self.w) + self.b_hid)
+            T.dot(input_repr, self.w) + self.b_hid)
 
         #   binary activation, hidden layer, positive phase
         self.hid_act_pos = self.theano_rng.binomial(
@@ -106,7 +110,7 @@ class LRBM():
                   self.w[:self.repr_size].T) + self.b_vis[:self.repr_size])
         #   but we need the whole visible vector, for the updates
         self.vis_neg = T.concatenate(
-            (_vis_neg, self.input_repr[:, self.repr_size:]), axis=1)
+            (_vis_neg, input_repr[:, self.repr_size:]), axis=1)
 
         #   a function that returns the energy symbolic variable
         #   given visible and hidden unit symbolic variables
@@ -120,20 +124,44 @@ class LRBM():
         #   first define the function for each scan step
         # def prob(hidden):
         #     hidden = T.tile()
-        #     _energies = energy(self.input_repr, hidden)
+        #     _energies = energy(input_repr, hidden)
 
             #   activation probability, hidden layer, negative phase
         self.hid_prb_neg = T.nnet.sigmoid(
             T.dot(self.vis_neg, self.w) + self.b_hid)
 
         #   standard energy of the input
-        self.energy = energy(self.input_repr, self.hid_prb_pos)
+        self.energy = energy(input_repr, self.hid_prb_pos)
+
+        #   exact probablity of a single sample, given model params only
+        def _probability(sample):
+            #   a matrix with input-representations for all words,
+            #   conditioned on the conditioning terms of the sample
+            _partition = T.concatenate([
+                emb,
+                T.tile(emb[sample[1:]].flatten().dimshuffle(('x', 0)),
+                       (self.vocab_size, 1))],
+                axis=1).astype('float64')
+            #   input to each hidden unit, for every input-repr in _partition
+            _hid_in = -T.dot(_partition, self.w) - self.b_hid
+            #   a binom signifying a hidden unit being on or off
+            _hid_in_exp = (1 + T.exp(_hid_in))
+            #   divide with mean for greater numeric stability
+            #   does not change end probability
+            _hid_in_exp /= _hid_in_exp.mean()
+            _probs = _hid_in_exp.prod(axis=1)
+            _probs *= -T.exp(T.dot(_partition, self.b_vis))
+            return _probs[sample[0]] / _probs.sum()
+        #   now use theano scan to calculate probabilities for all inputs
+        self.probability, _ = theano.scan(_probability,
+                                          outputs_info=None,
+                                          sequences=[input])
 
         #   reconstruction error that we want to reduce
         #   we use contrastive divergence to model the distribution
         #   and optimize the vocabulary
         self.reconstruction_error = (
-            (self.input_repr - self.vis_neg) ** 2).mean()
+            (input_repr - self.vis_neg) ** 2).mean()
 
     def mean_log_lik(self, x):
         """
@@ -144,7 +172,6 @@ class LRBM():
         :param x: Samples of shape (N, n * len(used_ftrs)).
         :return: Mean log loss.
         """
-        vocab_len = self.embedding.get_value(borrow=True).shape[0]
         energy_f = theano.function([self.input], self.energy)
 
         def _probability(sample):
@@ -152,8 +179,9 @@ class LRBM():
             #   create samples for each vocab word
             #   given the conditioning part of the sample
             _partition = np.hstack((
-                np.arange(vocab_len, dtype=sample.dtype).reshape(vocab_len, 1),
-                np.tile(sample[1:], (vocab_len, 1))))
+                np.arange(self.vocab_size, dtype=sample.dtype).reshape(
+                    self.vocab_size, 1),
+                np.tile(sample[1:], (self.vocab_size, 1))))
             #   calculate their energy, normalize, and exp
             _partition_en = energy_f(_partition).astype('float64')
             _partition_en -= _partition_en.min() + 400
