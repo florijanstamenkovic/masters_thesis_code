@@ -119,14 +119,7 @@ class LRBM():
                 - T.dot(hidden, self.b_hid.T) \
                 - (T.dot(visible, self.w) * hidden).sum(axis=1)
 
-        #   vocab probabilities p(w|h)
-        #   we need to use scan to calculate it
-        #   first define the function for each scan step
-        # def prob(hidden):
-        #     hidden = T.tile()
-        #     _energies = energy(input_repr, hidden)
-
-            #   activation probability, hidden layer, negative phase
+        #   activation probability, hidden layer, negative phase
         self.hid_prb_neg = T.nnet.sigmoid(
             T.dot(self.vis_neg, self.w) + self.b_hid)
 
@@ -134,6 +127,7 @@ class LRBM():
         self.energy = energy(input_repr, self.hid_prb_pos)
 
         #   exact probablity of a single sample, given model params only
+        #   first define a function that calculates the prob. of one sample
         def _probability(sample):
             #   a matrix with input-representations for all words,
             #   conditioned on the conditioning terms of the sample
@@ -156,6 +150,25 @@ class LRBM():
         self.probability, _ = theano.scan(_probability,
                                           outputs_info=None,
                                           sequences=[input])
+
+        #   distribution of the vocabulary, given hidden state
+        #   first define a function that calcs the distribution
+        #   given a single hidden_activation sample
+        def _distribution_w(vis_state, hid_act):
+            _vis = T.concatenate([
+                emb,
+                T.tile(emb[vis_state[1:]].flatten().dimshuffle(('x', 0)),
+                       (self.vocab_size, 1))],
+                axis=1).astype('float64')
+            _energies = energy(_vis, T.tile(hid_act, (self.vocab_size, 1)))
+            _energies -= _energies.min() + 400
+            _probs = T.exp(-_energies)
+            return _probs / _probs.sum()
+        #   now calculate probability distributions for the whole input
+        self.distribution_w_given_h = theano.scan(
+            _distribution_w,
+            outputs_info=None,
+            sequences=[input, self.hid_act_pos])
 
         #   reconstruction error that we want to reduce
         #   we use contrastive divergence to model the distribution
@@ -183,8 +196,8 @@ class LRBM():
                     self.vocab_size, 1),
                 np.tile(sample[1:], (self.vocab_size, 1))))
             #   calculate their energy, normalize, and exp
-            _partition_en = energy_f(_partition).astype('float64')
-            _partition_en -= _partition_en.min() + 400
+            _partition_en = energy_f(_partition).astype('float32')
+            _partition_en -= _partition_en.min() + 30
             _partition_exp = np.exp(-_partition_en)
             return _partition_exp[sample[0]] / _partition_exp.sum()
 
