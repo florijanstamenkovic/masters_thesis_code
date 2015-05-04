@@ -158,9 +158,7 @@ class NgramModel():
         """
         Trains the model on the given data. Training boils down to
         counting ngram occurences, which are then stored in
-        'self.counts'. Also the 'self.prob_normalizer' variable
-        is set, which is used to convert counts to probabilities
-        (it also includes additive smoothing).
+        'self.counts'.
 
         :param trainset: An iterable of texts. Each text
             is a tokens tuple (feature_1, feature_2, ..., parent_ind)

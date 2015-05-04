@@ -26,7 +26,7 @@ class LRBM():
     def __init__(self, n, vocab_size, repr_size, n_hid, rng=None):
 
         log.info("Creating an LRBM, n=%d, vocab_size=%r, repr_size=%r"
-                 "n_hid=%d", n, vocab_size, repr_size, n_hid)
+                 ", n_hid=%d", n, vocab_size, repr_size, n_hid)
 
         #   n-gram size
         self.n = n
@@ -47,7 +47,7 @@ class LRBM():
         self.embedding = theano.shared(
             value=numpy_rng.uniform(-1e-3, 1e-3, size=(
                 vocab_size, repr_size)).astype(theano.config.floatX),
-            name='repr_embedding', borrow=True)
+            name='embedding', borrow=True)
 
         #   figure out how many visible variables there are
         _n_vis = n * repr_size
@@ -105,12 +105,11 @@ class LRBM():
 
         #   activation, visible layer, negative phase
         #   only the conditioned term gets updated
-        _vis_neg = T.nnet.sigmoid(
-            T.dot(self.hid_act_pos,
-                  self.w[:self.repr_size].T) + self.b_vis[:self.repr_size])
-        #   but we need the whole visible vector, for the updates
+        self.vis_neg_cond = T.dot(self.hid_act_pos, self.w[:self.repr_size].T) \
+            + self.b_vis[:self.repr_size]
+        #   but we sometimes need the whole visible vector, for the updates
         self.vis_neg = T.concatenate(
-            (_vis_neg, input_repr[:, self.repr_size:]), axis=1)
+            (self.vis_neg_cond, input_repr[:, self.repr_size:]), axis=1)
 
         #   a function that returns the energy symbolic variable
         #   given visible and hidden unit symbolic variables
@@ -137,44 +136,78 @@ class LRBM():
                        (self.vocab_size, 1))],
                 axis=1).astype('float64')
             #   input to each hidden unit, for every input-repr in _partition
-            _hid_in = -T.dot(_partition, self.w) - self.b_hid
+            _hid_in = T.dot(_partition, self.w) + self.b_hid
             #   a binom signifying a hidden unit being on or off
             _hid_in_exp = (1 + T.exp(_hid_in))
             #   divide with mean for greater numeric stability
             #   does not change end probability
             _hid_in_exp /= _hid_in_exp.mean()
             _probs = _hid_in_exp.prod(axis=1)
-            _probs *= -T.exp(T.dot(_partition, self.b_vis))
+            _probs *= T.exp(T.dot(_partition, self.b_vis))
             return _probs[sample[0]] / _probs.sum()
         #   now use theano scan to calculate probabilities for all inputs
         self.probability, _ = theano.scan(_probability,
                                           outputs_info=None,
                                           sequences=[input])
 
+        #   returns the unnormalized probabilities of a set of samples
+        #   useful only for relative comparison of samples
+        _unnp_hid_in = T.dot(self.input_repr, self.w) + self.b_hid
+        _unnp_hid_in_exp = (1 + T.exp(_unnp_hid_in).astype('float64'))
+        _unnp_hid_in_exp /= _unnp_hid_in_exp.mean()
+        _unnp_probs = _unnp_hid_in_exp.prod(axis=1)
+        _unnp_probs *= T.exp(T.dot(self.input_repr, self.b_vis))
+        self.unnp = _unnp_probs
+
         #   distribution of the vocabulary, given hidden state
+        #   we use vis_neg because it's exactly W * hid_act
         #   first define a function that calcs the distribution
         #   given a single hidden_activation sample
-        def _distribution_w(vis_state, hid_act):
-            _vis = T.concatenate([
-                emb,
-                T.tile(emb[vis_state[1:]].flatten().dimshuffle(('x', 0)),
-                       (self.vocab_size, 1))],
-                axis=1).astype('float64')
-            _energies = energy(_vis, T.tile(hid_act, (self.vocab_size, 1)))
-            _energies -= _energies.min() + 400
-            _probs = T.exp(-_energies)
-            return _probs / _probs.sum()
+        def _distribution_w(vis_neg_cond):
+            #   since only the conditioned term differs in the partition
+            #   exp(other_terms) cancels out in the fraction
+            _partition_en = -T.dot(emb, vis_neg_cond)
+            #   subract C (equal to dividing with C in exp-space)
+            #   so that exp(_partition) fits in float32
+            _partition_en -= _partition_en.min() + 70
+            #   exponentiate, normalize and return
+            _partition = T.exp(-_partition_en)
+            return _partition / _partition.sum()
+
         #   now calculate probability distributions for the whole input
-        self.distribution_w_given_h = theano.scan(
+        self.distribution_w_given_h, _ = theano.scan(
             _distribution_w,
             outputs_info=None,
-            sequences=[input, self.hid_act_pos])
+            sequences=[self.vis_neg_cond])
 
         #   reconstruction error that we want to reduce
         #   we use contrastive divergence to model the distribution
         #   and optimize the vocabulary
         self.reconstruction_error = (
             (input_repr - self.vis_neg) ** 2).mean()
+
+    def params(self, symbolic=False):
+        """
+        Returns a dictionary of all the model parameters. The dictionary
+        keys are parameter names, values are parameter.
+
+        :param symbolic: If symbolic Theano variables should be returned.
+            If False (default), then their numpy value arrays are returned.
+        :return: A dictionary that maps parameter names to their values
+            (shared theano variables, or numpy arrays).
+        """
+        r_val = {
+            "w": self.w,
+            "embedding": self.embedding,
+            "b_hid": self.b_hid,
+            "b_vis": self.b_vis,
+        }
+
+        if not symbolic:
+            r_val = dict([(k, v.get_value(borrow=True))
+                          for k, v in r_val.iteritems()])
+
+        return r_val
 
     def mean_log_lik(self, x):
         """
@@ -234,8 +267,8 @@ class LRBM():
             (weight decay).
         """
 
-        log.info('Training RBM, epochs: %d, eps: %r, steps:%d',
-                 epochs, eps, steps)
+        log.info('Training RBM, epochs: %d, eps: %r, alpha: %.2f, steps:%d',
+                 epochs, eps, alpha, steps)
 
         #   pack trainset into a shared variable
         mnb_count = (x_train.shape[0] - 1) / mnb_size + 1
@@ -254,14 +287,27 @@ class LRBM():
                   ) / T.cast(vis_pos.shape[0], theano.config.floatX)
 
         #   calculate the "gradient" for word embedding modification
-        grad_l = T.dot(hid_pos, self.w.T) - T.dot(hid_neg, self.w.T)
-        #   reorganize the grad_l from (N, n * d) to (N * n, d)
-        grad_l = [grad_l[:, i * self.repr_size: (i + 1) * self.repr_size]
-                  for i in xrange(self.n)]
-        grad_l = T.concatenate(grad_l, axis=0)
-        #   add embedding optimization to updates
-        #   reorganize input from (N, n) into (N * n)
-        input_stack = self.input.dimshuffle((1, 0)).flatten()
+        #   first define a function that calcs it for one sample
+        def _grad_l_for_sample(w, p_w_given_h, h_v_pos, h_v_neg):
+            #   reshape from (n * d, ) to (n, d)
+            h_v_pos = T.reshape(h_v_pos, (self.n, self.repr_size))
+            h_v_neg = T.reshape(h_v_neg, (self.n, self.repr_size))
+            #   tile p from (Nw, 1) to (Nw, n)
+            p_w_given_h = T.tile(p_w_given_h.dimshuffle((0, 'x')),
+                                 (1, self.n))
+            #   first the negative phase gradient
+            #   to form a matrix of appropriate size
+            grad_l = T.dot(p_w_given_h, -h_v_neg)
+            #   now the positive phase
+            grad_l = T.inc_subtensor(grad_l[w], h_v_pos)
+            return grad_l
+        #   now calculate it for all the samples
+        _grad_l, _ = theano.scan(
+            _grad_l_for_sample,
+            sequences=[self.input, self.distribution_w_given_h,
+                       T.dot(hid_pos, self.w.T), T.dot(hid_neg, self.w.T)])
+        #   final gradient is just the mean across minibatch samples
+        grad_l = _grad_l.mean(axis=0)
 
         #   add regularization to gradients
         grad_b_vis -= weight_cost * self.b_vis
@@ -274,8 +320,7 @@ class LRBM():
             (self.w, self.w + eps_th * alpha * grad_w),
             (self.b_vis, self.b_vis + eps_th * alpha * grad_b_vis),
             (self.b_hid, self.b_hid + eps_th * alpha * grad_b_hid),
-            (self.embedding, T.inc_subtensor(
-                self.embedding[input_stack], eps_th * (1 - alpha) * grad_l))
+            (self.embedding, self.embedding + eps_th * (1 - alpha) * grad_l)
         ]
 
         #   finally construct the function that updates parameters
@@ -297,10 +342,9 @@ class LRBM():
         )
 
         #   things we'll track through training, for reporting
-        train_costs_mnb = []
-        train_costs_ep = []
-        valid_costs_ep = []
-        train_times_ep = []
+        train_costs = []
+        valid_costs = []
+        train_times = []
 
         #   iterate through the epochs
         log.info("Starting training")
@@ -314,36 +358,30 @@ class LRBM():
 
             #   calc epsilon for this epoch
             if not isinstance(eps, float):
-                epoch_eps = eps(epoch_ind, train_costs_ep)
+                epoch_eps = eps(epoch_ind, train_costs)
             else:
                 epoch_eps = eps
 
             #   iterate through the minibatches
-            for batch_ind in xrange(mnb_count):
-                train_costs_mnb.append(train_f(batch_ind, epoch_eps))
-                log.debug('Mnb %d train cost %.5f',
-                          batch_ind, train_costs_mnb[-1])
+            def mnb_train(batch_ind):
+                cost = train_f(batch_ind, epoch_eps)
+                log.debug('Mnb %d train cost %.5f', batch_ind, cost)
                 mnb_callback(self, epoch_ind, batch_ind)
+                return cost
 
-            train_costs_ep.append(
-                np.array(train_costs_mnb)[-mnb_count:].mean())
-            valid_costs_ep.append(validate_f(x_valid))
-            train_times_ep.append(time() - epoch_t0)
+            train_costs.append(np.mean(map(mnb_train, xrange(mnb_count))))
+            valid_costs.append(validate_f(x_valid))
+            train_times.append(time() - epoch_t0)
 
-            log.info(
-                'Epoch %d:\n\ttrain cost: %.5f\n\tvalid cost: %.5f'
-                '\n\tduration %.2f sec',
-                epoch_ind,
-                train_costs_ep[-1],
-                valid_costs_ep[-1],
-                train_times_ep[-1]
-            )
+            log.info('Epoch %d:\n\ttrain cost: %.5f\n\tvalid cost: %.5f'
+                     '\n\tduration %.2f sec', epoch_ind,
+                     train_costs[-1], valid_costs[-1], train_times[-1]
+                     )
             epoch_callback(self, epoch_ind)
 
-        log.info('Training duration %.2f min',
-                 (sum(train_times_ep)) / 60.0)
+        log.info('Training duration %.2f min', (sum(train_times)) / 60.0)
 
-        return train_costs_ep, train_times_ep
+        return train_costs, valid_costs, train_times
 
     def __getstate__(self):
         """
