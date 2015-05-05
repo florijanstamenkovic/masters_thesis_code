@@ -6,62 +6,112 @@ the 'data' module).
 
 import logging
 import data
-import numpy as np
 import sys
 import itertools
 import os
-import util
-from scipy.sparse import coo_matrix
 from time import time
+from weakref import WeakValueDictionary
+
+import numpy as np
+from scipy.sparse import coo_matrix
+
+import util
 
 log = logging.getLogger(__name__)
 
-_NGRAM_DIR = 'ngram_models'
 
-
-class NgramModel():
-
-    #   the directory where ngrams are stored
-    @staticmethod
-    def dir(tree, ftr_use, ts_reduction, min_occ, min_files):
-        dir = "%s_features-%s_data-subset_%r-min_occ_%r-min_files_%r" % (
-            "tree" if tree else "linear",
-            "".join([str(int(b)) for b in ftr_use]),
-            ts_reduction, min_occ, min_files)
-        dir = os.path.join(_NGRAM_DIR, dir)
-        if not os.path.exists(dir):
-            os.makedirs(dir)
-
-        return dir
+class Counts(object):
 
     """
-    An ngram based language model. Supports linear
-    and dependancy-syntax-based ngrams.
+    Encapsulation for the counter of ngrams.
     """
 
-    @staticmethod
-    def get(n, use_tree, feature_use, feature_sizes, trainset, dir, lmbd=0.1):
+    #   root of the directory where ngram counts are stored
+    _COUNTS_DIR = 'counts_ngram'
+
+    #   weak reference cache of loaded models
+    _COUNTS_CACHE = WeakValueDictionary()
+
+    @classmethod
+    def get(cls, n, use_tree, feature_use, feature_sizes,
+            ts_reduction, min_occ, min_files, trainset):
         """
         Gets an ngram model for the given parameters. First attempts
         to load a chached version of the model, if unable to load it,
         it trains a model and stores it for later usage.
         """
 
-        #   try loading the model
-        path = os.path.join(dir, "%d-grams_%.2f-smoothing.pkl" % (n, lmbd))
+        #   directory where the counts are stored
+        dir = "%s_features-%s_data-subset_%r-min_occ_%r-min_files_%r" % (
+            "tree" if use_tree else "linear",
+            "".join([str(int(b)) for b in feature_use]),
+            ts_reduction, min_occ, min_files)
+        dir = os.path.join(cls._COUNTS_DIR, dir)
+        if not os.path.exists(dir):
+            os.makedirs(dir)
+
+        #   path where the model is stored
+        path = os.path.join(dir, "%d-grams.pkl" % n)
+
+        #   see if it's already loaded
+        if path in cls._COUNTS_CACHE:
+            return cls._COUNTS_CACHE[path]
+
+        #   model not loaded in memory, try to load it from permanent storage
         model = util.try_pickle_load(path)
         if model is not None:
             return model
 
-        #   failed to load model, create and train it
-        train_start_time = time()
-        model = NgramModel(n, use_tree, feature_use, feature_sizes, lmbd)
-        model.train(trainset)
-        log.info("Model trained in %.2f sec", time() - train_start_time)
+        #   failed to load counts, create them
+        counts = Counts(np.array(feature_sizes)[feature_use], trainset)
 
-        #   store model and then return it
-        util.try_pickle_dump(model, path)
-        return model
+        #   store counts into caches and then return it
+        util.try_pickle_dump(counts, path)
+        cls._COUNTS_CACHE[path] = counts
+        return counts
+
+    def __init__(self, feature_sizes, ngrams):
+        """
+        Creates the ngram counter. n is infered from
+        'feature_sizes' and 'ngrams'.
+
+        :param feature_sizes: An array of ints that indicate the dimension
+            sizes of all the features in the ngrams.
+        :param ngrams: The ngrams to count. A numpy array of shape
+            (N, feature_count * n).
+        """
+        super(Counts, self).__init__()
+
+        self.n = ngrams.shape[1] / feature_sizes.size
+        self.feature_sizes = feature_sizes
+
+        log.info("Counting %d-grams", self.n)
+
+        #   calculate the shape of the accumulator
+        #   and convert ngrams from (N, n) shape to (N, 2)
+        cnt_shape, multipliers = self.reduced_ngrams_mul()
+        ngrams = np.dot(ngrams, multipliers.T)
+
+        #   create the accumulator
+        counts = coo_matrix(
+            (np.ones(ngrams.shape[0], dtype='uint8'),
+                (ngrams[:, 0], ngrams[:, 1])), shape=cnt_shape,
+            dtype='uint32').tocsc()
+
+        log.info("Counting done, summing up")
+        self.counts = counts
+        self.count_sum = ngrams.shape[0]
+
+    def count(self, ngrams):
+        """
+        Returns the counts of given ngrams.
+
+        :param ngrams: A numpy array of ngrams of shape (N, n * feature_count).
+        :return: A numpy array of counts for given ngrams, of shape (N, ).
+        """
+        ngrams = np.dot(ngrams, self.reduced_ngrams_mul()[1].T)
+        counts = map(lambda ngram: self.counts[tuple(ngram)], ngrams)
+        return np.array(counts, dtype='uint32')
 
     def reduced_ngrams_mul(self):
         """
@@ -85,9 +135,7 @@ class NgramModel():
                   self.n, self.feature_sizes)
 
         #   the shape of the n-gram array
-        dims = [t[0] for t in zip(self.feature_sizes, self.feature_use)
-                if t[1]]
-        dims = np.tile(np.array(dims, dtype='uint32'), self.n)
+        dims = np.tile(np.array(self.feature_sizes, dtype='uint32'), self.n)
 
         #   all possible combinations of dimensions
         combs = itertools.product((False, True), repeat=len(dims))
@@ -133,7 +181,16 @@ class NgramModel():
         self._reduced_ngrams_val = (shape, muls)
         return (shape, muls)
 
-    def __init__(self, n, tree, feature_use, feature_sizes, lmbd):
+
+class NgramModel():
+
+    """
+    An ngram based language model. Supports linear
+    and dependancy-syntax-based ngrams.
+    """
+
+    def __init__(self, n, use_tree, feature_use, feature_sizes,
+                 ts_reduction, min_occ, min_files, lmbd, trainset):
         """
         Initializes the ngram model. Does not train it.
 
@@ -141,48 +198,29 @@ class NgramModel():
         :param tree: If n-grams should be generated from the dependency
             syntax tree. If False n-grams are generated in a linear way
             (the common definitinon of word n-grams).
-        :param feature_use: An array of booleans which indicate which of the
-            features should be used in this model.
         :param feature_sizes: An array of ints that indicate the dimension
-            sizes of all the features.
+            sizes of features used by this model.
         :param lmbd: Lambda parameter for additive (Laplace) smoothing.
         """
 
         self.n = n
-        self.tree = tree
-        self.feature_use = feature_use
         self.feature_sizes = feature_sizes
         self.lmbd = lmbd
 
-    def train(self, ngrams):
-        """
-        Trains the model on the given data. Training boils down to
-        counting ngram occurences, which are then stored in
-        'self.counts'.
+        #   count ngram occurences
+        self.counts_n = Counts.get(
+            n, use_tree, feature_use, feature_sizes,
+            ts_reduction, min_occ, min_files, trainset)
 
-        :param trainset: An iterable of texts. Each text
-            is a tokens tuple (feature_1, feature_2, ..., parent_ind)
-            as returned by the 'data.process_string' function.
-        """
+        #   remember the number of ngrams in trainset
+        self.counts_sum = trainset.shape[0]
 
-        log.info("Training %d-gram model", self.n)
-
-        #   calculate the shape of the accumulator
-        #   and convert ngrams from (N, n) shape to (N, 2)
-        cnt_shape, multipliers = self.reduced_ngrams_mul()
-        ngrams = np.dot(ngrams, multipliers.T)
-
-        #   create the accumulator
-        counts = coo_matrix(
-            (np.ones(ngrams.shape[0], dtype='uint8'),
-                (ngrams[:, 0], ngrams[:, 1])), shape=cnt_shape,
-            dtype='uint32').tocsc()
-
-        log.info("Counting done, summing up")
-        self.counts = counts
-        self.count_sum = counts.sum()
-        self.prob_normalizer = self.count_sum + \
-            self.lmbd * np.prod(map(float, counts.shape))
+        #   for all but unigrams, also count the occurences
+        #   of the conditioning term
+        if n > 1:
+            self.counts_nmin1 = Counts.get(
+                n - 1, use_tree, feature_use, feature_sizes,
+                ts_reduction, min_occ, min_files, trainset[:, 1:])
 
     def probability(self, ngrams):
         """
@@ -194,83 +232,17 @@ class NgramModel():
             as returned by 'data.process_string' function.
         :return: numpy array of shape (ngram_count, 1)
         """
-        _, multipliers = self.reduced_ngrams_mul()
-        ngrams = np.dot(ngrams, multipliers.T)
+        c_n = self.counts_n.count(ngrams)
+        if self.n == 1:
+            c_nmin1 = self.counts_sum
+        else:
+            c_nmin1 = self.counts_nmin1.count(ngrams[:, 1:])
 
-        probs = map(lambda ind: self.counts[tuple(ind)], ngrams)
-        #   depending on n, counts can be returned as arrays or floats
-        #   so take care to convert to float
-        probs = [(p if isinstance(p, float) else p.sum()) + self.lmbd
-                 for p in probs]
-        return np.array(probs) / self.prob_normalizer
+        normalizer = self.lmbd * np.prod(self.feature_sizes)
+        return (c_n + self.lmbd) / (c_nmin1 + normalizer)
 
     def __str__(self):
         return "%d-grams_%.2f-smoothing" % (self.n, self.lmbd)
-
-
-class NgramAvgModel():
-
-    """
-    A model that averages n, (n-1), ... , 1 gram probabilities
-    of a given sequences. Averaging is weighted.
-    """
-
-    @staticmethod
-    def get(n, use_tree, feature_use, feature_sizes, trainset, dir, lmbd=0.1,
-            weight=0.5):
-        """
-        Gets an averaging ngram model for the given parameters.
-        Obtains the normal (non-averaging) ngram models using
-        'NgramModel.get'.
-
-        All params except for 'weight' are passed to 'NgramModel.get'.
-        The 'weighs' param is used to calculate averaging weights.
-        If of type 'float', then the weights are calcualted in
-        so that for weights=0.6 and n=3 the weights are [0.6, 0.24, 0.16],
-        for [3-grams, 2-grams, 1-grams] respectively. If 'weights' is
-        not a 'float', it is expected to be an iterable of n floats.
-        """
-
-        models = [NgramModel.get(
-            n, use_tree, feature_use, feature_sizes,
-            trainset, dir, lmbd) for x in xrange(n, 0, -1)]
-
-        if isinstance(weight, float):
-            weights = [1.0]
-            for _ in xrange(n - 1):
-                weights[-1] *= weight
-                weights.append(1 - sum(weights))
-        else:
-            weights = weight
-
-        return NgramAvgModel(models, weights)
-
-    def __init__(self, models, weights):
-        log.info("Ngram averaging, max n=%d, weights=%r", len(models), weights)
-
-        self.models = models
-        self.weights = weights
-
-    def probability(self, tokens):
-        """
-        Calculates and returns the probability of
-        a series of tokens.
-
-        :param tokens: A standard tuple of tokens:
-            (vocab_indices, head_indices, dep_type_indices)
-            as returned by 'data.process_string' function.
-        """
-        total = 0.0
-        for model, weight in zip(self.models, self.weights):
-            total += model.probability(tokens) * weight
-
-        return total
-
-    def __str__(self):
-        r_val = "ngram-averaging model, made of:"
-        for w, m in zip(self.weights, self.models):
-            r_val += "\n\t%.2f * %s" % (w, m)
-        return r_val
 
 
 def main():
@@ -301,48 +273,35 @@ def main():
     min_files = util.argv('-f', 1, int)
     #   features to use, by default use only vocab
     #   choices are: [vocab, lemma, lemma-4, pos-google, pos-penn, dep-type]
-    ft_format = lambda s: map(
+    feature_format = lambda s: map(
         lambda s: s.lower() in ["1", "true", "yes", "t", "y"], s)
-    ftr_use = np.array(util.argv('-u', ft_format("100000"), ft_format))
-    tree = '-t' in sys.argv
-
-    #   the directory where ngrams are stored
-    dir = NgramModel.dir(tree, ftr_use, ts_reduction, min_occ, min_files)
+    feature_use = np.array(
+        util.argv('-u', feature_format("100000"), feature_format))
+    use_tree = '-t' in sys.argv
 
     #   store logs
     if '-e' in sys.argv or '-es' in sys.argv:
-        log_name = os.path.join(dir, "eval.log")
-        log.addHandler(logging.FileHandler(log_name))
-
-    #   create different n-gram models with plain +1 smoothing
-    params = [
-        (NgramModel, 1),
-        (NgramModel, 2),
-        (NgramModel, 3),
-        (NgramModel, 4)
-    ]
+        log.addHandler(logging.FileHandler("ngram_eval.log"))
 
     #   create averaging n-gram models
     if '-a' in sys.argv:
-        params.extend([
-            (NgramAvgModel, 3),
-            (NgramAvgModel, 4),
-        ])
+        raise "Should implement this"
 
-    for model_type, n in params:
+    for n in xrange(4, 0, -1):
 
         #   load the ngram data, answers, feature sizes etc
-        sent_ngrams, qg_ngrams, answers, ftr_sizes = data.load_ngrams(
-            n, ftr_use, tree, ts_reduction, min_occ, min_files)
+        sent_ngrams, qg_ngrams, answers, feature_sizes = data.load_ngrams(
+            n, feature_use, use_tree, ts_reduction, min_occ, min_files)
 
         #   get the model
-        model = model_type.get(
-            n, tree, ftr_use, ftr_sizes, sent_ngrams, dir)
+        model = NgramModel(n, use_tree, feature_use, feature_sizes,
+                           ts_reduction, min_occ, min_files, 0.1, sent_ngrams)
 
         if '-e' in sys.argv or '-es' in sys.argv:
 
             #   evaluation helper functions
-            answ = lambda q_g: np.argmax([model.probability(q) for q in q_g])
+            answ = lambda q_g: np.argmax(
+                [model.probability(q).prod() for q in q_g])
             score = lambda a, b: (a == b).sum() / float(len(a))
 
             #   indices of questions used in evaluation

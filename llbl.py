@@ -1,11 +1,6 @@
 """
-Implementation of a Restricted Boltzmann Machine
-for language modeling. Based on (Mnih 2008.)
-
-Uses Theano, but does not utilize automatic gradient
-calculation based on free energy (like in the Theano
-RBM tutorial), but instead uses already defined CD
-and PCD expressions.
+Implementation of a log-bilinear language model,
+based on (Mnih, 2008.).
 """
 import numpy as np
 import theano
@@ -16,12 +11,12 @@ from time import time
 log = logging.getLogger(__name__)
 
 
-class LRBM():
+class LLBL():
 
-    def __init__(self, n, vocab_size, repr_size, n_hid, rng=None):
+    def __init__(self, n, vocab_size, repr_size, rng=None):
 
-        log.info("Creating an LRBM, n=%d, vocab_size=%r, repr_size=%r"
-                 ", n_hid=%d", n, vocab_size, repr_size, n_hid)
+        log.info("Creating an LRBM, n=%d, vocab_size=%r, repr_size=%r",
+                 n, vocab_size, repr_size)
 
         #   n-gram size
         self.n = n
@@ -44,30 +39,27 @@ class LRBM():
                 vocab_size, repr_size)).astype(theano.config.floatX),
             name='embedding', borrow=True)
 
-        #   figure out how many visible variables there are
-        _n_vis = n * repr_size
-
         #   if weights are not provided, initialize them
         self.w = theano.shared(value=np.asarray(
             numpy_rng.uniform(
-                low=-4 * np.sqrt(6. / (n_hid + _n_vis)),
-                high=4 * np.sqrt(6. / (n_hid + _n_vis)),
-                size=(_n_vis, n_hid)
+                low=-4 * np.sqrt(3. / repr_size),
+                high=4 * np.sqrt(3. / repr_size),
+                size=(n - 1, repr_size, repr_size)
             ),
             dtype=theano.config.floatX
         ), name='w', borrow=True)
 
-        #   if hidden biases are not provided, initialize them
-        self.b_hid = theano.shared(
-            value=np.zeros(n_hid, dtype=theano.config.floatX),
-            name='b_hid',
+        #   representation biases
+        self.b_repr = theano.shared(
+            value=np.zeros(repr_size, dtype=theano.config.floatX),
+            name='b_repr',
             borrow=True
         )
 
-        #   if visible biases are not provided, initialize them
-        self.b_vis = theano.shared(
-            value=np.zeros(_n_vis, dtype=theano.config.floatX),
-            name='b_vis',
+        #   word biases
+        self.b_word = theano.shared(
+            value=np.zeros(vocab_size, dtype=theano.config.floatX),
+            name='b_word',
             borrow=True
         )
 
@@ -83,63 +75,48 @@ class LRBM():
         #   each row represents an n-gram
         input = T.matrix('input', dtype='uint16')
         self.input = input
+
         emb = self.embedding
 
-        #   a sym var for input mapped to emebedded representations
-        input_repr = emb[input].flatten(2)
-        self.input_repr = input_repr
+        #   energy function
+        def energy(input):
+            """
+            Returns the symbolic variable for the energy, given
+            an input symbolic variable.
 
-        #   activation probability, hidden layer, positive phase
-        self.hid_prb_pos = T.nnet.sigmoid(
-            T.dot(input_repr, self.w) + self.b_hid)
+            :param input: Symbolic variable for ngrams. Shaped
+                (N, n).
+            """
+            cond_term_repr = self.embedding[input[:, 0]]
+            energy = -self.b_word[input[:, 0]]
+            energy -= T.dot(cond_term_repr, self.b_repr)
+            for term in xrange(self.n - 1):
+                term_proj = T.dot(emb[input[:, term + 1]], emb[term])
+                energy -= (term_proj * cond_term_repr).sum(axis=1)
+            return energy
 
-        #   binary activation, hidden layer, positive phase
-        self.hid_act_pos = self.theano_rng.binomial(
-            n=1, p=self.hid_prb_pos, size=self.hid_prb_pos.shape,
-            dtype=theano.config.floatX)
-
-        #   activation, visible layer, negative phase
-        #   only the conditioned term gets updated
-        self.vis_neg_cond = T.dot(self.hid_act_pos, self.w[:self.repr_size].T) \
-            + self.b_vis[:self.repr_size]
-        #   but we sometimes need the whole visible vector, for the updates
-        self.vis_neg = T.concatenate(
-            (self.vis_neg_cond, input_repr[:, self.repr_size:]), axis=1)
-
-        #   a function that returns the energy symbolic variable
-        #   given visible and hidden unit symbolic variables
-        def energy(visible, hidden):
-            return -T.dot(visible, self.b_vis.T) \
-                - T.dot(hidden, self.b_hid.T) \
-                - (T.dot(visible, self.w) * hidden).sum(axis=1)
-
-        #   activation probability, hidden layer, negative phase
-        self.hid_prb_neg = T.nnet.sigmoid(
-            T.dot(self.vis_neg, self.w) + self.b_hid)
-
-        #   standard energy of the input
-        self.energy = energy(input_repr, self.hid_prb_pos)
+        self.energy = energy(input)
 
         #   exact probablity of a single sample, given model params only
         #   first define a function that calculates the prob. of one sample
         def _probability(sample):
-            #   a matrix with input-representations for all words,
-            #   conditioned on the conditioning terms of the sample
-            _partition = T.concatenate([
-                emb,
-                T.tile(emb[sample[1:]].flatten().dimshuffle(('x', 0)),
+            #   a matrix with all words as the conditioned term,
+            #   with conditioning terms like in sample
+            partition = T.concatenate([
+                T.arange(self.vocab_size).dimshuffle(0, 'x'),
+                T.tile(sample[1:].flatten().dimshuffle(('x', 0)),
                        (self.vocab_size, 1))],
-                axis=1).astype('float64')
-            #   input to each hidden unit, for every input-repr in _partition
-            _hid_in = T.dot(_partition, self.w) + self.b_hid
-            #   a binom signifying a hidden unit being on or off
-            _hid_in_exp = (1 + T.exp(_hid_in))
-            #   divide with mean for greater numeric stability
-            #   does not change end probability
-            _hid_in_exp /= _hid_in_exp.mean()
-            _probs = _hid_in_exp.prod(axis=1)
-            _probs *= T.exp(T.dot(_partition, self.b_vis))
-            return _probs[sample[0]] / _probs.sum()
+                axis=1)
+
+            #   energy for all the terms
+            partition_en = energy(partition)
+            #   subract C (equal to dividing with exp(C) in exp-space)
+            #   so that exp(_partition) fits in float32
+            partition_en -= partition_en.min() + 70
+            #   exponentiate, normalize and return
+            partition = T.exp(-partition_en)
+            return partition / partition.sum()
+
         #   now use theano scan to calculate probabilities for all inputs
         self.probability, _ = theano.scan(_probability,
                                           outputs_info=None,
@@ -147,39 +124,14 @@ class LRBM():
 
         #   returns the unnormalized probabilities of a set of samples
         #   useful only for relative comparison of samples
-        _unnp_hid_in = T.dot(self.input_repr, self.w) + self.b_hid
-        _unnp_hid_in_exp = (1 + T.exp(_unnp_hid_in).astype('float64'))
-        _unnp_hid_in_exp /= _unnp_hid_in_exp.mean()
-        _unnp_probs = _unnp_hid_in_exp.prod(axis=1)
-        _unnp_probs *= T.exp(T.dot(self.input_repr, self.b_vis))
-        self.unnp = _unnp_probs
+        unnp_en = -energy(input)
+        unnp_en -= unnp_en.min() + 70
+        unnp = T.exp(-unnp_en)
+        self.unnp = unnp / unnp.sum()
 
-        #   distribution of the vocabulary, given hidden state
-        #   we use vis_neg because it's exactly W * hid_act
-        #   first define a function that calcs the distribution
-        #   given a single hidden_activation sample
-        def _distribution_w(vis_neg_cond):
-            #   since only the conditioned term differs in the partition
-            #   exp(other_terms) cancels out in the fraction
-            _partition_en = -T.dot(emb, vis_neg_cond)
-            #   subract C (equal to dividing with C in exp-space)
-            #   so that exp(_partition) fits in float32
-            _partition_en -= _partition_en.min() + 70
-            #   exponentiate, normalize and return
-            _partition = T.exp(-_partition_en)
-            return _partition / _partition.sum()
-
-        #   now calculate probability distributions for the whole input
-        self.distribution_w_given_h, _ = theano.scan(
-            _distribution_w,
-            outputs_info=None,
-            sequences=[self.vis_neg_cond])
-
-        #   reconstruction error that we want to reduce
-        #   we use contrastive divergence to model the distribution
-        #   and optimize the vocabulary
-        self.reconstruction_error = (
-            (input_repr - self.vis_neg) ** 2).mean()
+        #   error we want to reduce
+        #   good old log loss
+        self.error = T.log(self.probability).mean()
 
     def params(self, symbolic=False):
         """
@@ -195,7 +147,8 @@ class LRBM():
             "w": self.w,
             "embedding": self.embedding,
             "b_hid": self.b_hid,
-            "b_vis": self.b_vis,
+            "b_repr": self.b_repr,
+            "b_word": self.b_word,
         }
 
         if not symbolic:
@@ -207,7 +160,7 @@ class LRBM():
     def train(self, x_train, x_valid, mnb_size, epochs, eps, alpha,
               steps=1, weight_cost=1e-4):
         """
-        Trains the RBM with the given data. Returns a tuple containing
+        Trains the LLBL with the given data. Returns a tuple containing
         (costs, times, hid_unit_activation_histograms). All three
         elements are lists, one item per epoch except for 'times' that
         has an extra element (training start time).

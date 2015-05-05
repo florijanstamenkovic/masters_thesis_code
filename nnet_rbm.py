@@ -25,7 +25,11 @@ _DIR = 'nnet_models'
 #   how many ngrams from the validation set should be used
 #   when evaluating exact log-likelihood... the whole validation
 #   set can't be used because this is SLOW
-_LOG_LIK_SIZE = 100
+_LL_SIZE = 100
+
+#   we won't validate only after each epoch (large dataset)
+#   but after each _VALIDATE_MNB minibatches
+_VALIDATE_MNB = 10
 
 
 #   logger
@@ -138,10 +142,6 @@ def main():
     #   nnet rbm-s only support one-feature ngrams
     assert ftr_use.sum() == 1
 
-    #   the directory that stores ngram models we compare against
-    ngram_dir = NgramModel.dir(use_tree, ftr_use, ts_reduction,
-                               min_occ, min_files)
-
     #   get nnet training parameters
     epochs = util.argv('-ep', 20, int)
     alpha = util.argv('-a', 0.5, float)
@@ -168,8 +168,8 @@ def main():
     #   so first create the unigram distribution, no smoothing
     unigrams_data = data.load_ngrams(1, ftr_use, False, subset=ts_reduction,
                                      min_occ=min_occ, min_files=min_files)[0]
-    unigrams_data = NgramModel.get(1, False, ftr_use, feature_sizes,
-                                   unigrams_data, ngram_dir, lmbd=0.0)
+    unigrams_data = NgramModel(1, False, ftr_use, feature_sizes, ts_reduction,
+                               min_occ, min_files, 0.0, unigrams_data)
     unigrams_dist = unigrams_data.probability(
         np.arange(vocab_size).reshape(vocab_size, 1))
     unigrams_dist /= unigrams_dist.sum()
@@ -194,21 +194,31 @@ def main():
     log_file_handler.setLevel(logging.INFO)
     logging.root.addHandler(log_file_handler)
 
-    #   we will plot log-lik ratios for every 10 minibatches
+    #   we will plot log-lik ratios for every _VALIDATE_MNB minibatches
     #   we will also plot true mean log-lik
     x_valid_ll_ratio = []
     x_valid_ll = []
+    x_train_ll = []
+    x_valid_p_mean = []
+    x_train_p_mean = []
 
     def mnb_callback(lrbm, epoch, mnb):
         """
         Callback function called after every minibatch.
         """
-        if (mnb % 10) != 9:
+        if (mnb + 1) % _VALIDATE_MNB:
             return
 
         #   calculate log likelihood using the exact probability
         probability_f = theano.function([lrbm.input], lrbm.probability)
-        x_valid_ll.append(np.log(probability_f(x_valid[_LOG_LIK_SIZE])).mean())
+        p_valid = probability_f(x_valid[:_LL_SIZE])
+        p_train = probability_f(x_train[:_LL_SIZE])
+
+        #   track mean probabilities and log-likelihood
+        x_valid_p_mean.append(p_valid.mean())
+        x_train_p_mean.append(p_train.mean())
+        x_valid_ll.append(np.log(p_valid).mean())
+        x_train_ll.append(np.log(p_train).mean())
 
         #   also calculate the probability ratio between normal validation set
         #   and the randomized one
@@ -217,8 +227,10 @@ def main():
             np.log(unnp_f(x_valid) / unnp_f(x_valid_r)).mean())
 
         log.info('Epoch %d, mnb: %d, x_valid mean-log-lik: %.5f'
-                 ' , log(p(x_valid) / p(x_valid_r).mean(): %.5f',
-                 epoch, mnb, x_valid_ll[-1], x_valid_ll_ratio[-1])
+                 ' , x_valid p-mean: %.5f'
+                 ' , ln(p(x_valid) / p(x_valid_r).mean(): %.5f',
+                 epoch, mnb, x_valid_ll[-1], x_valid_p_mean[-1],
+                 x_valid_ll_ratio[-1])
 
     #   track if the model progresses on the sentence completion challenge
     sent_challenge = []
@@ -247,24 +259,50 @@ def main():
     train_cost, valid_cost, _ = lrbm.train(
         x_train, x_valid, mnb_size, epochs, eps, alpha)
 
-    #   plot many pretty things
+    #   plot training progress info
+    #   first we need values for the x-axis (minibatch count)
     mnb_count = (x_train.shape[0] - 1) / mnb_size + 1
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(
-        2, 2, sharex=True, sharey=False)
-    fig.set_size_inches(16, 12)
-    ax1.plot(mnb_count * (np.arange(epochs) + 1), train_cost, 'b-',
+    mnb_valid_ep = mnb_count / _VALIDATE_MNB
+    x_axis_mnb = np.tile((np.arange(mnb_valid_ep) + 1) * _VALIDATE_MNB, epochs)
+    x_axis_mnb += np.repeat(np.arange(epochs) * mnb_count, mnb_valid_ep)
+    x_axis_mnb = np.hstack(([0], x_axis_mnb))
+
+    plt.figure(figsize=(16, 12))
+    plt.subplot(221)
+    plt.plot(mnb_count * (np.arange(epochs) + 1), train_cost, 'b-',
              label='train')
-    ax1.plot(mnb_count * (np.arange(epochs) + 1), valid_cost, 'g-',
+    plt.plot(mnb_count * (np.arange(epochs) + 1), valid_cost, 'g-',
              label='valid')
-    ax1.set_title('Cost')
-    plt.legend(loc=2)
-    ax2.plot(10 * np.arange(len(x_valid_ll)), x_valid_ll, 'g-')
-    ax2.set_title('log-lik(x_valid)')
-    ax3.plot(10 * np.arange(len(x_valid_ll)), x_valid_ll_ratio, 'g-')
-    ax3.set_title('log(p(x_valid) / p(x_valid_r)).mean()')
-    ax4.plot(mnb_count * np.arange(epochs + 1), sent_challenge, 'g-')
-    ax4.set_title('sent_challenge')
-    plt.savefig(file + ".pdf")
+    plt.title('reconstruction error')
+    plt.grid()
+    plt.legend(loc=1)
+
+    plt.subplot(222)
+    plt.plot(x_axis_mnb, x_train_ll, 'b-', label='train')
+    plt.plot(x_axis_mnb, x_valid_ll, 'g-', label='valid')
+    plt.ylim((np.log(0.5 / vocab_size), 0.))
+    plt.title('log-likelihood(x)')
+    plt.grid()
+    plt.legend(loc=4)
+
+    plt.subplot(223)
+    plt.plot(x_axis_mnb, x_valid_ll_ratio, 'g-')
+    plt.title('ln(p(x_valid) / p(x_valid_r)).mean()')
+    plt.grid()
+
+    plt.subplot(224)
+    plt.plot(x_axis_mnb, x_train_p_mean, 'b-', label='train')
+    plt.plot(x_axis_mnb, x_valid_p_mean, 'g-', label='valid')
+    plt.title('p(x).mean()')
+    plt.grid()
+    plt.legend(loc=4)
+
+    # plt.subplot(224)
+    # plt.plot(mnb_count * np.arange(epochs + 1), sent_challenge, 'g-')
+    # plt.title('sent_challenge')
+    # plt.grid()
+
+    plt.savefig(os.path.join(dir, file + ".pdf"))
 
 
 if __name__ == '__main__':
