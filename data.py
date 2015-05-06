@@ -475,7 +475,7 @@ def ngrams(n, tree, tokens, invalid_tokens=None):
 
 
 def load_ngrams(n, features_use, tree, subset=None, min_occ=1, min_files=1,
-                remove_subst_tokens=True):
+                remove_subst_tokens=False):
     """
     Loads the dataset for microsot sentence completion challenge, processed
     into ngrams.

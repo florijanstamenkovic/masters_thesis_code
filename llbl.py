@@ -15,7 +15,7 @@ class LLBL():
 
     def __init__(self, n, vocab_size, repr_size, rng=None):
 
-        log.info("Creating an LRBM, n=%d, vocab_size=%r, repr_size=%r",
+        log.info("Creating an LLBL, n=%d, vocab_size=%r, repr_size=%r",
                  n, vocab_size, repr_size)
 
         #   n-gram size
@@ -40,14 +40,13 @@ class LLBL():
             name='embedding', borrow=True)
 
         #   if weights are not provided, initialize them
-        self.w = theano.shared(value=np.asarray(
-            numpy_rng.uniform(
-                low=-4 * np.sqrt(3. / repr_size),
-                high=4 * np.sqrt(3. / repr_size),
-                size=(n - 1, repr_size, repr_size)
-            ),
-            dtype=theano.config.floatX
-        ), name='w', borrow=True)
+        def make_w(i):
+            return theano.shared(value=np.asarray(
+                numpy_rng.uniform(
+                    low=-0.001, high=0.001, size=(repr_size, repr_size)),
+                dtype=theano.config.floatX
+            ), name='w_%d' % i, borrow=True)
+        self.w = map(make_w, range(n - 1))
 
         #   representation biases
         self.b_repr = theano.shared(
@@ -91,8 +90,9 @@ class LLBL():
             energy = -self.b_word[input[:, 0]]
             energy -= T.dot(cond_term_repr, self.b_repr)
             for term in xrange(self.n - 1):
-                term_proj = T.dot(emb[input[:, term + 1]], emb[term])
+                term_proj = T.dot(emb[input[:, term + 1]], self.w[term])
                 energy -= (term_proj * cond_term_repr).sum(axis=1)
+            energy.name = 'energy'
             return energy
 
         self.energy = energy(input)
@@ -121,6 +121,7 @@ class LLBL():
         self.probability, _ = theano.scan(_probability,
                                           outputs_info=None,
                                           sequences=[input])
+        self.prediction = T.argmax(self.probability, axis=1)
 
         #   returns the unnormalized probabilities of a set of samples
         #   useful only for relative comparison of samples
@@ -129,9 +130,9 @@ class LLBL():
         unnp = T.exp(-unnp_en)
         self.unnp = unnp / unnp.sum()
 
-        #   error we want to reduce
+        #   cost function we want to reduce
         #   good old log loss
-        self.error = T.log(self.probability).mean()
+        self.cost = -T.log(self.probability).mean()
 
     def params(self, symbolic=False):
         """
@@ -144,12 +145,12 @@ class LLBL():
             (shared theano variables, or numpy arrays).
         """
         r_val = {
-            "w": self.w,
             "embedding": self.embedding,
-            "b_hid": self.b_hid,
             "b_repr": self.b_repr,
             "b_word": self.b_word,
         }
+        for i, w_i in enumerate(self.w):
+            r_val["w_%d" % i] = w_i
 
         if not symbolic:
             r_val = dict([(k, v.get_value(borrow=True))
@@ -177,7 +178,7 @@ class LLBL():
             learning rate based on epoch number and a list of
             error rates.
         :param alpha: float in range [0, 1]. Probability distribution
-            (RBM) learning is multiplied with alpha, while representation
+            (LBL) learning is multiplied with alpha, while representation
             learning (word-vectors) is multiplied with (1 - alpha).
         :param steps: The number of steps to be used in PCD.
             Integer or callable, or a callable that determines the
@@ -187,7 +188,7 @@ class LLBL():
             (weight decay).
         """
 
-        log.info('Training RBM, epochs: %d, eps: %r, alpha: %.2f, steps:%d',
+        log.info('Training LBL, epochs: %d, eps: %r, alpha: %.2f',
                  epochs, eps, alpha, steps)
 
         #   pack trainset into a shared variable
@@ -196,58 +197,63 @@ class LLBL():
 
         #   *** Creating a function for training the net
 
-        #   first calculate CD "gradients"
-        vis_pos = self.input_repr
-        vis_neg = self.vis_neg
-        hid_pos = self.hid_prb_pos
-        hid_neg = self.hid_prb_neg
-        grad_b_vis = vis_pos.mean(axis=0) - vis_neg.mean(axis=0)
-        grad_b_hid = hid_pos.mean(axis=0) - hid_neg.mean(axis=0)
-        grad_w = (T.dot(vis_pos.T, hid_pos) - T.dot(vis_neg.T, hid_neg)
-                  ) / T.cast(vis_pos.shape[0], theano.config.floatX)
+        emb = self.embedding
+        inp = self.input
+        inp_sz = inp.shape[0].astype('uint16')
 
-        #   calculate the "gradient" for word embedding modification
-        #   first define a function that calcs it for one sample
-        def _grad_l_for_sample(w, p_w_given_h, h_v_pos, h_v_neg):
-            #   reshape from (n * d, ) to (n, d)
-            h_v_pos = T.reshape(h_v_pos, (self.n, self.repr_size))
-            h_v_neg = T.reshape(h_v_neg, (self.n, self.repr_size))
-            #   tile p from (Nw, 1) to (Nw, n)
-            p_w_given_h = T.tile(p_w_given_h.dimshuffle((0, 'x')),
-                                 (1, self.n))
-            #   first the negative phase gradient
-            #   to form a matrix of appropriate size
-            grad_l = T.dot(p_w_given_h, -h_v_neg)
-            #   now the positive phase
-            grad_l = T.inc_subtensor(grad_l[w], h_v_pos)
-            return grad_l
-        #   now calculate it for all the samples
-        _grad_l, _ = theano.scan(
-            _grad_l_for_sample,
-            sequences=[self.input, self.distribution_w_given_h,
-                       T.dot(hid_pos, self.w.T), T.dot(hid_neg, self.w.T)])
-        #   final gradient is just the mean across minibatch samples
-        grad_l = _grad_l.mean(axis=0)
+        #   grad_w, per term-combination-matrix
+        grad_w = []
+        for i in xrange(1, self.n):
+            emb_i = emb[inp[:, i]].T
+            pos = T.dot(emb_i, emb[inp[:, 0]]) / inp_sz
+            neg = T.dot(emb_i, T.dot(self.probability, self.embedding))
+            grad_w.append(pos - neg)
 
-        #   add regularization to gradients
-        grad_b_vis -= weight_cost * self.b_vis
-        grad_b_hid -= weight_cost * self.b_hid
-        grad_w -= weight_cost * self.w
+        #   word embedding gradient
+        grad_emb = T.zeros_like(emb)
+        grad_emb = T.inc_subtensor(grad_emb[inp[:, 0]], self.b_repr / inp_sz)
+        for term in range(self.n - 1):
+            #   P(data) projection of term_i onto the conditioned term
+            proj_term = T.dot(emb[inp[:, term + 1]], self.w[term]) / inp_sz
+            grad_emb = T.inc_subtensor(grad_emb[inp[:, 0]], proj_term)
+
+            #   P(data) projection of conditioned term on term_i
+            proj_cond = T.dot(emb[inp[:, 0]], self.w[term].T) / inp_sz
+            grad_emb = T.inc_subtensor(grad_emb[inp[:, term + 1]], proj_cond)
+
+            #   P(model) projection of term_i onto the conditioned
+            proj_term = T.dot(emb[inp[:, term + 1]], self.w[term])
+            grad_emb += T.dot(self.probability.T, proj_term)
+
+            #   P(model) projection of conditioned term on term_i
+            proj_cond = T.dot(T.dot(self.probability, emb), self.w[term].T)
+            grad_emb = T.inc_subtensor(grad_emb[inp[:, term + 1]], proj_cond)
+
+        #   biases gradients
+        grad_b_repr = emb[inp[:, 0]].mean(
+            axis=0) - T.dot(self.probability, emb).mean()
+        grad_b_word = - self.probability.mean(axis=0)
+        grad_b_word = T.inc_subtensor(grad_b_word[inp[:, 0]], 1. / inp_sz)
+
+        #   add L2 regularization to gradients
+        grad_w = map(lambda g_w, w: g_w - weight_cost * w, grad_w, self.w)
+        grad_emb -= weight_cost * emb
 
         #   define a list of updates that happen during training
         eps_th = T.scalar("eps", dtype=theano.config.floatX)
         updates = [
-            (self.w, self.w + eps_th * alpha * grad_w),
-            (self.b_vis, self.b_vis + eps_th * alpha * grad_b_vis),
-            (self.b_hid, self.b_hid + eps_th * alpha * grad_b_hid),
-            (self.embedding, self.embedding + eps_th * (1 - alpha) * grad_l)
+            (self.b_repr, self.b_repr + eps_th * alpha * grad_b_repr),
+            (self.b_word, self.b_word + eps_th * alpha * grad_b_word),
+            (emb, emb + eps_th * (1 - alpha) * grad_emb)
         ]
+        for grad_w, w in zip(grad_w, self.w):
+            updates.append((w, w + eps_th * alpha * grad_w))
 
         #   finally construct the function that updates parameters
         index = T.iscalar()
         train_f = theano.function(
             [index, eps_th],
-            self.reconstruction_error,
+            self.cost,
             updates=updates,
             givens={
                 self.input: x_train[index * mnb_size: (index + 1) * mnb_size]
@@ -258,7 +264,7 @@ class LLBL():
         #   a separate function we will use for validation
         validate_f = theano.function(
             [self.input],
-            self.reconstruction_error,
+            self.cost,
         )
 
         #   things we'll track through training, for reporting

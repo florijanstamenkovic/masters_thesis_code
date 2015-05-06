@@ -178,7 +178,7 @@ class LRBM():
         #   reconstruction error that we want to reduce
         #   we use contrastive divergence to model the distribution
         #   and optimize the vocabulary
-        self.reconstruction_error = (
+        self.cost = (
             (input_repr - self.vis_neg) ** 2).mean()
 
     def params(self, symbolic=False):
@@ -277,8 +277,6 @@ class LRBM():
         grad_l = _grad_l.mean(axis=0)
 
         #   add regularization to gradients
-        grad_b_vis -= weight_cost * self.b_vis
-        grad_b_hid -= weight_cost * self.b_hid
         grad_w -= weight_cost * self.w
 
         #   define a list of updates that happen during training
@@ -294,7 +292,7 @@ class LRBM():
         index = T.iscalar()
         train_f = theano.function(
             [index, eps_th],
-            self.reconstruction_error,
+            self.cost,
             updates=updates,
             givens={
                 self.input: x_train[index * mnb_size: (index + 1) * mnb_size]
@@ -305,7 +303,7 @@ class LRBM():
         #   a separate function we will use for validation
         validate_f = theano.function(
             [self.input],
-            self.reconstruction_error,
+            self.cost,
         )
 
         #   things we'll track through training, for reporting

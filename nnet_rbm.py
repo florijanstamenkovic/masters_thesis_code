@@ -16,6 +16,7 @@ import numpy as np
 
 import data
 from lrbm import LRBM
+from llbl import LLBL
 from ngram import NgramModel
 
 
@@ -135,14 +136,15 @@ def main():
     min_files = util.argv('-f', 2, int)
     n = util.argv('-n', 4, int)
     use_tree = '-t' in sys.argv
-    ft_format = lambda s: map(
-        lambda s: s.lower() in ["1", "true", "yes", "t", "y"], s)
+    bool_format = lambda s: s.lower() in ["1", "true", "yes", "t", "y"]
+    ft_format = lambda s: map(bool_format, s)
     ftr_use = np.array(util.argv('-u', ft_format("001000"), ft_format))
 
     #   nnet rbm-s only support one-feature ngrams
     assert ftr_use.sum() == 1
 
     #   get nnet training parameters
+    use_lbl = '-l' in sys.argv
     epochs = util.argv('-ep', 20, int)
     alpha = util.argv('-a', 0.5, float)
     eps = util.argv('-eps', 0.002, float)
@@ -202,7 +204,7 @@ def main():
     x_valid_p_mean = []
     x_train_p_mean = []
 
-    def mnb_callback(lrbm, epoch, mnb):
+    def mnb_callback(net, epoch, mnb):
         """
         Callback function called after every minibatch.
         """
@@ -210,7 +212,7 @@ def main():
             return
 
         #   calculate log likelihood using the exact probability
-        probability_f = theano.function([lrbm.input], lrbm.probability)
+        probability_f = theano.function([net.input], net.probability)
         p_valid = probability_f(x_valid[:_LL_SIZE])
         p_train = probability_f(x_train[:_LL_SIZE])
 
@@ -222,7 +224,7 @@ def main():
 
         #   also calculate the probability ratio between normal validation set
         #   and the randomized one
-        unnp_f = theano.function([lrbm.input], lrbm.unnp)
+        unnp_f = theano.function([net.input], net.unnp)
         x_valid_ll_ratio.append(
             np.log(unnp_f(x_valid) / unnp_f(x_valid_r)).mean())
 
@@ -235,16 +237,16 @@ def main():
     #   track if the model progresses on the sentence completion challenge
     sent_challenge = []
 
-    def epoch_callback(lrbm, epoch):
+    def epoch_callback(net, epoch):
 
         #   log some info about the parameters, just so we know
         param_mean_std = [(k, v.mean(), v.std())
-                          for k, v in lrbm.params().iteritems()]
+                          for k, v in net.params().iteritems()]
         log.info("Epoch %d: %s", epoch, "".join(
             ["\n\t%s: %.5f +- %.5f" % pms for pms in param_mean_std]))
 
         #   evaluate model on the sentence completion challenge
-        unnp_f = theano.function([lrbm.input], lrbm.unnp)
+        unnp_f = theano.function([net.input], net.unnp)
         qg_log_lik = [[np.log(unnp_f(q)).sum() for q in q_g]
                       for q_g in q_groups]
         predictions = map(lambda q_g: np.argmax(q_g), qg_log_lik)
@@ -252,11 +254,14 @@ def main():
         log.info('Epoch %d sentence completion eval score: %.4f',
                  epoch, sent_challenge[-1])
 
-    log.info("Creating LRBM")
-    lrbm = LRBM(n, vocab_size, d, n_hid, 12345)
-    lrbm.mnb_callback = mnb_callback
-    lrbm.epoch_callback = epoch_callback
-    train_cost, valid_cost, _ = lrbm.train(
+    log.info("Creating model")
+    if use_lbl:
+        net = LLBL(n, vocab_size, d, 12345)
+    else:
+        net = LRBM(n, vocab_size, d, n_hid, 12345)
+    net.mnb_callback = mnb_callback
+    net.epoch_callback = epoch_callback
+    train_cost, valid_cost, _ = net.train(
         x_train, x_valid, mnb_size, epochs, eps, alpha)
 
     #   plot training progress info
@@ -273,7 +278,7 @@ def main():
              label='train')
     plt.plot(mnb_count * (np.arange(epochs) + 1), valid_cost, 'g-',
              label='valid')
-    plt.title('reconstruction error')
+    plt.title('cost')
     plt.grid()
     plt.legend(loc=1)
 
