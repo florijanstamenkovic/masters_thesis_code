@@ -35,7 +35,7 @@ class LLBL():
         self.repr_size = repr_size
         self.vocab_size = vocab_size
         self.embedding = theano.shared(
-            value=numpy_rng.uniform(-1e-3, 1e-3, size=(
+            value=numpy_rng.uniform(-0.01, 0.01, size=(
                 vocab_size, repr_size)).astype(theano.config.floatX),
             name='embedding', borrow=True)
 
@@ -43,7 +43,7 @@ class LLBL():
         def make_w(i):
             return theano.shared(value=np.asarray(
                 numpy_rng.uniform(
-                    low=-0.001, high=0.001, size=(repr_size, repr_size)),
+                    low=-0.01, high=0.01, size=(repr_size, repr_size)),
                 dtype=theano.config.floatX
             ), name='w_%d' % i, borrow=True)
         self.w = map(make_w, range(n - 1))
@@ -97,7 +97,7 @@ class LLBL():
 
         self.energy = energy(input)
 
-        #   exact probablity of a single sample, given model params only
+        #   exact probablity distribution of words for context
         #   first define a function that calculates the prob. of one sample
         def _probability(sample):
             #   a matrix with all words as the conditioned term,
@@ -112,21 +112,23 @@ class LLBL():
             partition_en = energy(partition)
             #   subract C (equal to dividing with exp(C) in exp-space)
             #   so that exp(_partition) fits in float32
-            partition_en -= partition_en.min() + 70
+            partition_en -= partition_en.min()
             #   exponentiate, normalize and return
             partition = T.exp(-partition_en)
             return partition / partition.sum()
 
         #   now use theano scan to calculate probabilities for all inputs
-        self.probability, _ = theano.scan(_probability,
-                                          outputs_info=None,
-                                          sequences=[input])
-        self.prediction = T.argmax(self.probability, axis=1)
+        self.distr_w, _ = theano.scan(_probability,
+                                      outputs_info=None,
+                                      sequences=[input])
+
+        #   we also need the probability of the conditioned term
+        self.probability = self.distr_w[T.arange(input.shape[0]), input[:, 0]]
 
         #   returns the unnormalized probabilities of a set of samples
         #   useful only for relative comparison of samples
         unnp_en = -energy(input)
-        unnp_en -= unnp_en.min() + 70
+        unnp_en -= unnp_en.min()
         unnp = T.exp(-unnp_en)
         self.unnp = unnp / unnp.sum()
 
@@ -189,7 +191,7 @@ class LLBL():
         """
 
         log.info('Training LBL, epochs: %d, eps: %r, alpha: %.2f',
-                 epochs, eps, alpha, steps)
+                 epochs, eps, alpha)
 
         #   pack trainset into a shared variable
         mnb_count = (x_train.shape[0] - 1) / mnb_size + 1
@@ -206,7 +208,7 @@ class LLBL():
         for i in xrange(1, self.n):
             emb_i = emb[inp[:, i]].T
             pos = T.dot(emb_i, emb[inp[:, 0]]) / inp_sz
-            neg = T.dot(emb_i, T.dot(self.probability, self.embedding))
+            neg = T.dot(emb_i, T.dot(self.distr_w, self.embedding))
             grad_w.append(pos - neg)
 
         #   word embedding gradient
@@ -223,21 +225,21 @@ class LLBL():
 
             #   P(model) projection of term_i onto the conditioned
             proj_term = T.dot(emb[inp[:, term + 1]], self.w[term])
-            grad_emb += T.dot(self.probability.T, proj_term)
+            grad_emb += T.dot(self.distr_w.T, proj_term)
 
             #   P(model) projection of conditioned term on term_i
-            proj_cond = T.dot(T.dot(self.probability, emb), self.w[term].T)
+            proj_cond = T.dot(T.dot(self.distr_w, emb), self.w[term].T)
             grad_emb = T.inc_subtensor(grad_emb[inp[:, term + 1]], proj_cond)
 
         #   biases gradients
         grad_b_repr = emb[inp[:, 0]].mean(
-            axis=0) - T.dot(self.probability, emb).mean()
-        grad_b_word = - self.probability.mean(axis=0)
+            axis=0) - T.dot(self.distr_w, emb).mean()
+        grad_b_word = - self.distr_w.mean(axis=0)
         grad_b_word = T.inc_subtensor(grad_b_word[inp[:, 0]], 1. / inp_sz)
 
         #   add L2 regularization to gradients
-        grad_w = map(lambda g_w, w: g_w - weight_cost * w, grad_w, self.w)
-        grad_emb -= weight_cost * emb
+        # grad_w = map(lambda g_w, w: g_w - weight_cost * w, grad_w, self.w)
+        # grad_emb -= weight_cost * emb
 
         #   define a list of updates that happen during training
         eps_th = T.scalar("eps", dtype=theano.config.floatX)

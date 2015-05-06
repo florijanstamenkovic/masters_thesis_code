@@ -285,7 +285,7 @@ def main():
     plt.subplot(222)
     plt.plot(x_axis_mnb, x_train_ll, 'b-', label='train')
     plt.plot(x_axis_mnb, x_valid_ll, 'g-', label='valid')
-    plt.ylim((np.log(0.5 / vocab_size), 0.))
+    plt.ylim((np.log(0.5 / vocab_size), -5))
     plt.title('log-likelihood(x)')
     plt.grid()
     plt.legend(loc=4)
