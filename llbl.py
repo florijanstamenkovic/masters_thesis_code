@@ -180,7 +180,7 @@ class LLBL():
             learning rate based on epoch number and a list of
             error rates.
         :param alpha: float in range [0, 1]. Probability distribution
-            (LBL) learning is multiplied with alpha, while representation
+            (LLBL) learning is multiplied with alpha, while representation
             learning (word-vectors) is multiplied with (1 - alpha).
         :param steps: The number of steps to be used in PCD.
             Integer or callable, or a callable that determines the
@@ -190,7 +190,7 @@ class LLBL():
             (weight decay).
         """
 
-        log.info('Training LBL, epochs: %d, eps: %r, alpha: %.2f',
+        log.info('Training LLBL, epochs: %d, eps: %r, alpha: %.2f',
                  epochs, eps, alpha)
 
         #   pack trainset into a shared variable
@@ -201,7 +201,7 @@ class LLBL():
 
         emb = self.embedding
         inp = self.input
-        inp_sz = inp.shape[0].astype('uint16')
+        inp_sz = inp.shape[0].astype(theano.config.floatX)
 
         #   grad_w, per term-combination-matrix
         grad_w = []
@@ -238,8 +238,8 @@ class LLBL():
         grad_b_word = T.inc_subtensor(grad_b_word[inp[:, 0]], 1. / inp_sz)
 
         #   add L2 regularization to gradients
-        # grad_w = map(lambda g_w, w: g_w - weight_cost * w, grad_w, self.w)
-        # grad_emb -= weight_cost * emb
+        grad_w = map(lambda g_w, w: g_w - weight_cost * w, grad_w, self.w)
+        grad_emb -= weight_cost * emb
 
         #   define a list of updates that happen during training
         eps_th = T.scalar("eps", dtype=theano.config.floatX)

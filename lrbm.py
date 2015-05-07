@@ -207,7 +207,7 @@ class LRBM():
     def train(self, x_train, x_valid, mnb_size, epochs, eps, alpha,
               steps=1, weight_cost=1e-4):
         """
-        Trains the RBM with the given data. Returns a tuple containing
+        Trains the LRBM with the given data. Returns a tuple containing
         (costs, times, hid_unit_activation_histograms). All three
         elements are lists, one item per epoch except for 'times' that
         has an extra element (training start time).
@@ -224,7 +224,7 @@ class LRBM():
             learning rate based on epoch number and a list of
             error rates.
         :param alpha: float in range [0, 1]. Probability distribution
-            (RBM) learning is multiplied with alpha, while representation
+            (LRBM) learning is multiplied with alpha, while representation
             learning (word-vectors) is multiplied with (1 - alpha).
         :param steps: The number of steps to be used in PCD.
             Integer or callable, or a callable that determines the
@@ -234,7 +234,7 @@ class LRBM():
             (weight decay).
         """
 
-        log.info('Training RBM, epochs: %d, eps: %r, alpha: %.2f, steps:%d',
+        log.info('Training LRBM, epochs: %d, eps: %r, alpha: %.2f, steps:%d',
                  epochs, eps, alpha, steps)
 
         #   pack trainset into a shared variable
