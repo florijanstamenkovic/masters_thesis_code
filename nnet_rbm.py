@@ -179,7 +179,8 @@ def main():
     x_valid_r = random_ngrams(x_valid, vocab_size, False, unigrams_dist)
 
     #   the directory for this model
-    dir = "%s_%d-gram_features-%s_data-subset_%r-min_occ_%r-min_files_%r" % (
+    dir = "%s_%s_%d-gram_features-%s_data-subset_%r-min_occ_%r-min_files_%r" % (
+        "llbl" if use_lbl else "lrbm",
         "tree" if use_tree else "linear", n,
         "".join([str(int(b)) for b in ftr_use]),
         ts_reduction, min_occ, min_files)
