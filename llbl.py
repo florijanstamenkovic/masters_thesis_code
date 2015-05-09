@@ -122,12 +122,25 @@ class LLBL():
                                       outputs_info=None,
                                       sequences=[input])
 
+        self.mnb_size_th = self.input.shape[0].astype('uint16')
+
+        _partition = T.concatenate([
+            T.arange(self.vocab_size, dtype=self.input.dtype).dimshuffle(
+                0, 'x').repeat(self.mnb_size_th, 1).T.flatten().dimshuffle(0, 'x'),
+            input[:, 1:].repeat(self.vocab_size, 0)
+        ], axis=1)
+        _partition_en = energy(_partition)
+        _partition_en = T.reshape(_partition_en, (-1, self.vocab_size))
+        _partition_en -= _partition_en.min(axis=1).dimshuffle(0, 'x')
+        _partition_exp = T.exp(-_partition_en)
+        self.distr_w = _partition_exp / _partition_exp.sum(axis=1).dimshuffle(0, 'x')
+
         #   we also need the probability of the conditioned term
         self.probability = self.distr_w[T.arange(input.shape[0]), input[:, 0]]
 
         #   returns the unnormalized probabilities of a set of samples
         #   useful only for relative comparison of samples
-        unnp_en = -energy(input)
+        unnp_en = energy(input)
         unnp_en -= unnp_en.min()
         unnp = T.exp(-unnp_en)
         self.unnp = unnp / unnp.sum()
@@ -194,8 +207,11 @@ class LLBL():
                  epochs, eps, alpha)
 
         #   pack trainset into a shared variable
-        mnb_count = (x_train.shape[0] - 1) / mnb_size + 1
+        train_mnb_count = (x_train.shape[0] - 1) / mnb_size + 1
+        valid_mnb_count = (x_valid.shape[0] - 1) / mnb_size + 1
         x_train = theano.shared(x_train, name='x_train', borrow=True)
+        x_valid = theano.shared(x_valid, name='x_valid', borrow=True)
+
 
         #   *** Creating a function for training the net
 
@@ -265,8 +281,11 @@ class LLBL():
 
         #   a separate function we will use for validation
         validate_f = theano.function(
-            [self.input],
+            [index],
             self.cost,
+            givens={
+                self.input: x_valid[index * mnb_size: (index + 1) * mnb_size]
+            }
         )
 
         #   things we'll track through training, for reporting
@@ -288,7 +307,7 @@ class LLBL():
             if not isinstance(eps, float):
                 epoch_eps = eps(epoch_ind, train_costs)
             else:
-                epoch_eps = eps
+                epoch_eps = eps * (0.95 ** epoch_ind)
 
             #   iterate learning through the minibatches
             def mnb_train(batch_ind):
@@ -296,9 +315,9 @@ class LLBL():
                 log.debug('Mnb %d train cost %.5f', batch_ind, cost)
                 mnb_callback(self, epoch_ind, batch_ind)
                 return cost
-            train_costs.append(np.mean(map(mnb_train, xrange(mnb_count))))
+            train_costs.append(np.mean(map(mnb_train, xrange(train_mnb_count))))
 
-            valid_costs.append(validate_f(x_valid))
+            valid_costs.append(np.mean(map(validate_f, range(valid_mnb_count))))
             epoch_callback(self, epoch_ind)
             train_times.append(time() - epoch_t0)
 
