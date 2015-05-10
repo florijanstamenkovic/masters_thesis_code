@@ -102,7 +102,7 @@ def main():
         #   create and evaluate a LLBL
         net = LLBL(n, vocab_size, d, 64353)
         #   let's track how smoothing influences validation cost
-        llbl_lmbd = [1e-5, 1e-4, 1e-3, 1e-2, 1e-1]
+        llbl_lmbd = [0., 1e-6, 1e-4]
         llbl_logloss = dict(zip(
             llbl_lmbd, [[] for i in range(len(llbl_lmbd))]))
 
@@ -122,7 +122,7 @@ def main():
                 probs = probs[np.arange(x_valid.shape[0]), x_valid[:, 0]]
                 log_loss = -np.log(probs).mean()
                 perplexity = np.exp(log_loss)
-                log.info("LLBL, epoch %d, mnb %d, lmbd=%.5f:"
+                log.info("LLBL, epoch %d, mnb %d, lmbd=%.6f:"
                          " log_loss: %.2f, perplexity: %.2f",
                          epoch, mnb, lmbd, log_loss, perplexity)
                 llbl_logloss[lmbd].append(log_loss)

@@ -107,7 +107,7 @@ def create_minibatches(x, y, size, shuffle=True):
     #   if size out of range, ensure appropriate
     size = min(size, len(x))
     size = max(1, size)
-    log.info('Creating minibatches, size: %d', size)
+    log.debug('Creating minibatches, size: %d', size)
 
     #   shuffle trainset
     if shuffle:
