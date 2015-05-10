@@ -34,6 +34,40 @@ def argv(flag, default=None, formatter=None):
     return value
 
 
+def dataset_split(x, validation=0.05, test=0.05, rng=None):
+    """
+    Splits dataset into train, validation and testing subsets.
+    The dataset is split on the zeroth axis.
+
+    :param x: The dataset of shape (N, ...)
+    :param validation: float in range (0, 1) that indicates
+        desired validation set size to be N * validation
+    :param test: float in range (0, 1) that indicates
+        desired test set size to be N * test
+    :param rng: Numpy random number generator, or an integer
+        seed for rng, or None (rng initialized always with the same seed).
+    """
+    if rng is None:
+        rng = np.random.RandomState()
+    elif isinstance(rng, int):
+        rng = np.random.RandomState(rng)
+
+    #   if sizes are given as proportions, convert to actual sizes
+    if isinstance(validation, float):
+        validation = int(x.shape[0] * validation)
+    if isinstance(test, float):
+        test = int(x.shape[0] * test)
+    train = x.shape[0] - validation - test
+
+    #   shuffle data
+    rng.shuffle(x)
+
+    log.info("Performing dataset split, sizes are: "
+             "train: %d, valid: %d, test: %d", train, validation, test)
+
+    return x[:train], x[train:train + validation], x[train + validation:]
+
+
 def create_minibatches(x, y, size, shuffle=True):
     """
     Default implementation for batching the

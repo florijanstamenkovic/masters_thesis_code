@@ -68,40 +68,6 @@ def random_ngrams(ngrams, vocab_size, all=False, dist=None, shuffle=False):
     return r_val
 
 
-def dataset_split(x, validation=0.05, test=0.05, rng=None):
-    """
-    Splits dataset into train, validation and testing subsets.
-    The dataset is split on the zeroth axis.
-
-    :param x: The dataset of shape (N, ...)
-    :param validation: float in range (0, 1) that indicates
-        desired validation set size to be N * validation
-    :param test: float in range (0, 1) that indicates
-        desired test set size to be N * test
-    :param rng: Numpy random number generator, or an integer
-        seed for rng, or None (rng initialized always with the same seed).
-    """
-    assert validation > 0. and test > 0.
-    assert validation + test < 1.
-
-    log.info("Performing dataset split, validation size: %.2f, "
-             "test size: %.2f", validation, test)
-
-    if rng is None:
-        rng = np.random.RandomState()
-    elif isinstance(rng, int):
-        rng = np.random.RandomState(rng)
-
-    #   shuffle data
-    rng.shuffle(x)
-
-    #   generate split indices
-    i1 = int(x.shape[0] * (1. - validation - test))
-    i2 = int(x.shape[0] * (1. - test))
-
-    return x[:i1], x[i1:i2], x[i2:]
-
-
 def main():
     """
     Trains and evaluates RBM energy based neural net
@@ -162,7 +128,7 @@ def main():
     log.info("Data loaded, %d ngrams", ngrams.shape[0])
 
     #   split data into sets
-    x_train, x_valid, x_test = dataset_split(ngrams, 0.05, 0.05, rng=12345)
+    x_train, x_valid, x_test = util.dataset_split(ngrams, 0.05, 0.05, rng=456)
 
     #   generate a version of the validation set that has
     #   the first term (the conditioned one) randomized

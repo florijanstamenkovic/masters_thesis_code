@@ -203,10 +203,6 @@ class NgramModel():
         :param lmbd: Lambda parameter for additive (Laplace) smoothing.
         """
 
-        self.n = n
-        self.feature_sizes = feature_sizes
-        self.lmbd = lmbd
-
         #   count ngram occurences
         self.counts_n = Counts.get(
             n, use_tree, feature_use, feature_sizes,
@@ -221,6 +217,11 @@ class NgramModel():
             self.counts_nmin1 = Counts.get(
                 n - 1, use_tree, feature_use, feature_sizes,
                 ts_reduction, min_occ, min_files, trainset[:, 1:])
+
+        #   remember model hyperparameters
+        self.n = n
+        self.feature_sizes = np.array(feature_sizes)[feature_use]
+        self.lmbd = lmbd
 
     def probability(self, ngrams):
         """

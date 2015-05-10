@@ -97,33 +97,10 @@ class LLBL():
 
         self.energy = energy(input)
 
-        #   exact probablity distribution of words for context
-        #   first define a function that calculates the prob. of one sample
-        def _probability(sample):
-            #   a matrix with all words as the conditioned term,
-            #   with conditioning terms like in sample
-            partition = T.concatenate([
-                T.arange(self.vocab_size).dimshuffle(0, 'x'),
-                T.tile(sample[1:].flatten().dimshuffle(('x', 0)),
-                       (self.vocab_size, 1))],
-                axis=1)
-
-            #   energy for all the terms
-            partition_en = energy(partition)
-            #   subract C (equal to dividing with exp(C) in exp-space)
-            #   so that exp(_partition) fits in float32
-            partition_en -= partition_en.min()
-            #   exponentiate, normalize and return
-            partition = T.exp(-partition_en)
-            return partition / partition.sum()
-
-        #   now use theano scan to calculate probabilities for all inputs
-        self.distr_w, _ = theano.scan(_probability,
-                                      outputs_info=None,
-                                      sequences=[input])
-
         self.mnb_size_th = self.input.shape[0].astype('uint16')
 
+        #   exact probablity distribution of words for context
+        #   first define a function that calculates the prob. of one sample
         _partition = T.concatenate([
             T.arange(self.vocab_size, dtype=self.input.dtype).dimshuffle(
                 0, 'x').repeat(self.mnb_size_th, 1).T.flatten().dimshuffle(0, 'x'),
@@ -133,6 +110,8 @@ class LLBL():
         _partition_en = T.reshape(_partition_en, (-1, self.vocab_size))
         _partition_en -= _partition_en.min(axis=1).dimshuffle(0, 'x')
         _partition_exp = T.exp(-_partition_en)
+        #   to enable the usage of smoothing, we'll expose this partition
+        self.partition_exp = _partition_exp
         self.distr_w = _partition_exp / _partition_exp.sum(axis=1).dimshuffle(0, 'x')
 
         #   we also need the probability of the conditioned term
