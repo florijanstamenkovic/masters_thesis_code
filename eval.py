@@ -106,17 +106,18 @@ def main():
         llbl_logloss = dict(zip(
             llbl_lmbd, [[] for i in range(len(llbl_lmbd))]))
 
-        def mnb_callback(llbl, mnb, epoch):
+        partition_exp_f = theano.function([net.input], net.partition_exp)
+
+        def mnb_callback(llbl, epoch, mnb):
             if (mnb + 1) % _VALIDATE_MNB:
                 return
 
-            partition_exp_f = theano.function([llbl.input], llbl.partition_exp)
+            _probs = map(partition_exp_f, util.create_minibatches(
+                x_valid, None, mnb_size, False))
+            _probs = np.vstack(_probs)
 
             for lmbd in llbl_lmbd:
-                probs = map(
-                    partition_exp_f,
-                    util.create_minibatches(x_valid, None, mnb_size, False))
-                probs = np.vstack(probs) + lmbd
+                probs = _probs + lmbd
                 probs /= np.expand_dims(probs.sum(axis=1), axis=1)
                 probs = probs[np.arange(x_valid.shape[0]), x_valid[:, 0]]
                 log_loss = -np.log(probs).mean()
