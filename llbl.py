@@ -307,7 +307,7 @@ class LLBL():
             if not isinstance(eps, float):
                 epoch_eps = eps(epoch_ind, train_costs)
             else:
-                epoch_eps = eps * (0.95 ** epoch_ind)
+                epoch_eps = eps * (0.1 + 0.9 * 0.9 ** epoch_ind)
 
             #   iterate learning through the minibatches
             def mnb_train(batch_ind):

@@ -195,7 +195,7 @@ def main():
     #   store the logs
     log_file_handler = logging.FileHandler(os.path.join(dir, file + ".log"))
     log_file_handler.setLevel(logging.INFO)
-    logging.root.addHandler(log_file_handler)
+    # logging.root.addHandler(log_file_handler)
 
     #   we will plot log-lik ratios for every _VALIDATE_MNB minibatches
     #   we will also plot true mean log-lik
@@ -225,9 +225,10 @@ def main():
 
         #   also calculate the probability ratio between normal validation set
         #   and the randomized one
-        unnp_f = theano.function([net.input], net.unnp)
-        x_valid_ll_ratio.append(
-            np.log(unnp_f(x_valid) / unnp_f(x_valid_r)).mean())
+        unnp = theano.function([net.input], net.unnp)(
+            np.vstack((x_valid[:_LL_SIZE], x_valid_r[:_LL_SIZE])))
+
+        x_valid_ll_ratio.append(np.log(unnp[:_LL_SIZE] / unnp[_LL_SIZE:]).mean())
 
         log.info('Epoch %d, mnb: %d, x_valid mean-log-lik: %.5f'
                  ' , x_valid p-mean: %.5f'
@@ -286,7 +287,7 @@ def main():
     plt.subplot(222)
     plt.plot(x_axis_mnb, x_train_ll, 'b-', label='train')
     plt.plot(x_axis_mnb, x_valid_ll, 'g-', label='valid')
-    plt.ylim((np.log(0.5 / vocab_size), -5))
+    plt.ylim((np.log(0.5 / vocab_size), max(max(x_train_ll), max(x_valid_ll)) + 0.5))
     plt.title('log-likelihood(x)')
     plt.grid()
     plt.legend(loc=4)

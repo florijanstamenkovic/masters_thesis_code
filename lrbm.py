@@ -129,7 +129,7 @@ class LRBM():
                 emb,
                 T.tile(emb[sample[1:]].flatten().dimshuffle(('x', 0)),
                        (self.vocab_size, 1))],
-                axis=1).astype('float64')
+                axis=1)
             #   input to each hidden unit, for every input-repr in _partition
             _hid_in = T.dot(_partition, self.w) + self.b_hid
             #   a binom signifying a hidden unit being on or off
@@ -148,7 +148,7 @@ class LRBM():
         #   returns the unnormalized probabilities of a set of samples
         #   useful only for relative comparison of samples
         _unnp_hid_in = T.dot(self.input_repr, self.w) + self.b_hid
-        _unnp_hid_in_exp = (1 + T.exp(_unnp_hid_in).astype('float64'))
+        _unnp_hid_in_exp = (1 + T.exp(_unnp_hid_in))
         _unnp_hid_in_exp /= _unnp_hid_in_exp.mean()
         _unnp_probs = _unnp_hid_in_exp.prod(axis=1)
         _unnp_probs *= T.exp(T.dot(self.input_repr, self.b_vis))
