@@ -111,12 +111,15 @@ def main():
                 return
 
             partition_exp_f = theano.function([llbl.input], llbl.partition_exp)
-            partition_exp = partition_exp_f(x_valid)
+
             for lmbd in llbl_lmbd:
-                partiton_exp_smooth = partition_exp + lmbd
-                distr_w = partiton_exp_smooth / np.expand_dims(partiton_exp_smooth.sum(axis=1), axis=1)
-                x_prob = distr_w[np.arange(x_valid.shape[0]), x_valid[:, 0]]
-                log_loss = -np.log(x_prob).mean()
+                probs = map(
+                    partition_exp_f,
+                    util.create_minibatches(x_valid, None, mnb_size, False))
+                probs = np.vstack(probs) + lmbd
+                probs /= np.expand_dims(probs.sum(axis=1), axis=1)
+                probs = probs[np.arange(x_valid.shape[0]), x_valid[:, 0]]
+                log_loss = -np.log(probs).mean()
                 perplexity = np.exp(log_loss)
                 log.info("LLBL, epoch %d, mnb %d, lmbd=%.5f:"
                          " log_loss: %.2f, perplexity: %.2f",
