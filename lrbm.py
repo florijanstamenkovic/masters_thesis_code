@@ -65,9 +65,9 @@ class LRBM():
         )
 
         #   if visible biases are not provided, initialize them
-        self.b_vis = theano.shared(
+        self.b_repr = theano.shared(
             value=np.zeros(_n_vis, dtype=theano.config.floatX),
-            name='b_vis',
+            name='b_repr',
             borrow=True
         )
 
@@ -101,7 +101,7 @@ class LRBM():
         #   activation, visible layer, negative phase
         #   only the conditioned term gets updated
         self.vis_neg_cond = T.dot(self.hid_act_pos, self.w[:self.repr_size].T) \
-            + self.b_vis[:self.repr_size]
+            + self.b_repr[:self.repr_size]
         #   but we sometimes need the whole visible vector, for the updates
         self.vis_neg = T.concatenate(
             (self.vis_neg_cond, input_repr[:, self.repr_size:]), axis=1)
@@ -109,7 +109,7 @@ class LRBM():
         #   a function that returns the energy symbolic variable
         #   given visible and hidden unit symbolic variables
         def energy(visible, hidden):
-            return -T.dot(visible, self.b_vis.T) \
+            return -T.dot(visible, self.b_repr.T) \
                 - T.dot(hidden, self.b_hid.T) \
                 - (T.dot(visible, self.w) * hidden).sum(axis=1)
 
@@ -122,28 +122,24 @@ class LRBM():
 
         #   exact probablity of a single sample, given model params only
         #   first define a function that calculates the prob. of one sample
-        def _probability(sample):
-            #   a matrix with input-representations for all words,
-            #   conditioned on the conditioning terms of the sample
-            _partition = T.concatenate([
-                emb,
-                T.tile(emb[sample[1:]].flatten().dimshuffle(('x', 0)),
-                       (self.vocab_size, 1))],
-                axis=1)
-            #   input to each hidden unit, for every input-repr in _partition
-            _hid_in = T.dot(_partition, self.w) + self.b_hid
-            #   a binom signifying a hidden unit being on or off
-            _hid_in_exp = (1 + T.exp(_hid_in))
-            #   divide with mean for greater numeric stability
-            #   does not change end probability
-            _hid_in_exp /= _hid_in_exp.mean()
-            _probs = _hid_in_exp.prod(axis=1)
-            _probs *= T.exp(T.dot(_partition, self.b_vis))
-            return _probs[sample[0]] / _probs.sum()
-        #   now use theano scan to calculate probabilities for all inputs
-        self.probability, _ = theano.scan(_probability,
-                                          outputs_info=None,
-                                          sequences=[input])
+        batch_size = self.input.shape[0]
+        _partition = T.concatenate([
+            emb.dimshuffle('x', 0, 1).repeat(batch_size, 0),
+            emb[self.input[:, 1:]].reshape((batch_size, 1, -1)).repeat(self.vocab_size, 1)
+        ], axis=2)
+        #   input to each hidden unit, for every input-repr in _partition
+        _hid_in = T.dot(_partition, self.w) + self.b_hid
+        #   a binom signifying a hidden unit being on or off
+        _hid_in_exp = (1 + T.exp(_hid_in))
+        #   divide with mean for greater numeric stability
+        #   does not change end probability
+        _hid_in_exp /= _hid_in_exp.mean(axis=2).mean(axis=1).dimshuffle(0, 'x', 'x')
+        _probs = _hid_in_exp.prod(axis=2)
+        _probs *= T.exp(T.dot(_partition, self.b_repr))
+        self.distr_w = _probs / _probs.sum(axis=1).dimshuffle(0, 'x')
+
+        #   we also need the probability of the conditioned term
+        self.probability = self.distr_w[T.arange(input.shape[0]), input[:, 0]]
 
         #   returns the unnormalized probabilities of a set of samples
         #   useful only for relative comparison of samples
@@ -151,7 +147,7 @@ class LRBM():
         _unnp_hid_in_exp = (1 + T.exp(_unnp_hid_in))
         _unnp_hid_in_exp /= _unnp_hid_in_exp.mean()
         _unnp_probs = _unnp_hid_in_exp.prod(axis=1)
-        _unnp_probs *= T.exp(T.dot(self.input_repr, self.b_vis))
+        _unnp_probs *= T.exp(T.dot(self.input_repr, self.b_repr))
         self.unnp = _unnp_probs
 
         #   distribution of the vocabulary, given hidden state
@@ -195,7 +191,7 @@ class LRBM():
             "w": self.w,
             "embedding": self.embedding,
             "b_hid": self.b_hid,
-            "b_vis": self.b_vis,
+            "b_repr": self.b_repr,
         }
 
         if not symbolic:
@@ -248,7 +244,7 @@ class LRBM():
         vis_neg = self.vis_neg
         hid_pos = self.hid_prb_pos
         hid_neg = self.hid_prb_neg
-        grad_b_vis = vis_pos.mean(axis=0) - vis_neg.mean(axis=0)
+        grad_b_repr = vis_pos.mean(axis=0) - vis_neg.mean(axis=0)
         grad_b_hid = hid_pos.mean(axis=0) - hid_neg.mean(axis=0)
         grad_w = (T.dot(vis_pos.T, hid_pos) - T.dot(vis_neg.T, hid_neg)
                   ) / T.cast(vis_pos.shape[0], theano.config.floatX)
@@ -283,7 +279,7 @@ class LRBM():
         eps_th = T.scalar("eps", dtype=theano.config.floatX)
         updates = [
             (self.w, self.w + eps_th * alpha * grad_w),
-            (self.b_vis, self.b_vis + eps_th * alpha * grad_b_vis),
+            (self.b_repr, self.b_repr + eps_th * alpha * grad_b_repr),
             (self.b_hid, self.b_hid + eps_th * alpha * grad_b_hid),
             (self.embedding, self.embedding + eps_th * (1 - alpha) * grad_l)
         ]
