@@ -152,24 +152,10 @@ class LRBM():
 
         #   distribution of the vocabulary, given hidden state
         #   we use vis_neg because it's exactly W * hid_act
-        #   first define a function that calcs the distribution
-        #   given a single hidden_activation sample
-        def _distribution_w(vis_neg_cond):
-            #   since only the conditioned term differs in the partition
-            #   exp(other_terms) cancels out in the fraction
-            _partition_en = -T.dot(emb, vis_neg_cond)
-            #   subract C (equal to dividing with C in exp-space)
-            #   so that exp(_partition) fits in float32
-            _partition_en -= _partition_en.min() + 70
-            #   exponentiate, normalize and return
-            _partition = T.exp(-_partition_en)
-            return _partition / _partition.sum()
-
-        #   now calculate probability distributions for the whole input
-        self.distribution_w_given_h, _ = theano.scan(
-            _distribution_w,
-            outputs_info=None,
-            sequences=[self.vis_neg_cond])
+        _partition_given_h = -T.dot(self.vis_neg_cond, emb.T)
+        _partition_given_h -= _partition_given_h.min(axis=1).dimshuffle(0, 'x')
+        _partition_given_h = T.exp(-_partition_given_h)
+        # self.distribution_w_given_h = _partition_given_h / _partition_given_h.sum(axis=1).dimshuffle(0, 'x')
 
         #   reconstruction error that we want to reduce
         #   we use contrastive divergence to model the distribution
