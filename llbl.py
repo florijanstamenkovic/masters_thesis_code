@@ -97,22 +97,23 @@ class LLBL():
 
         self.energy = energy(input)
 
-        self.mnb_size_th = self.input.shape[0].astype('uint16')
+        mnb_size_th = self.input.shape[0].astype('uint16')
 
         #   exact probablity distribution of words for context
         #   first define a function that calculates the prob. of one sample
-        _partition = T.concatenate([
+        mnb_size_th = self.input.shape[0].astype('uint16')
+        part = T.concatenate([
             T.arange(self.vocab_size, dtype=self.input.dtype).dimshuffle(
-                0, 'x').repeat(self.mnb_size_th, 1).T.flatten().dimshuffle(0, 'x'),
+                0, 'x').repeat(mnb_size_th, 1).T.flatten().dimshuffle(0, 'x'),
             input[:, 1:].repeat(self.vocab_size, 0)
         ], axis=1)
-        _partition_en = energy(_partition)
-        _partition_en = T.reshape(_partition_en, (-1, self.vocab_size))
-        _partition_en -= _partition_en.min(axis=1).dimshuffle(0, 'x')
-        _partition_exp = T.exp(-_partition_en)
-        #   to enable the usage of smoothing, we'll expose this partition
-        self.partition_exp = _partition_exp
-        self.distr_w = _partition_exp / _partition_exp.sum(axis=1).dimshuffle(0, 'x')
+        part_en = energy(part)
+        part_en = T.reshape(part_en, (-1, self.vocab_size))
+        part_en -= part_en.min(axis=1).dimshuffle(0, 'x')
+        part_exp = T.exp(-part_en)
+        #   for smoothing purposes, we'll expose the unnormalized partition
+        self.distr_w_unn = part_exp
+        self.distr_w = part_exp / part_exp.sum(axis=1).dimshuffle(0, 'x')
 
         #   we also need the probability of the conditioned term
         self.probability = self.distr_w[T.arange(input.shape[0]), input[:, 0]]
@@ -190,7 +191,6 @@ class LLBL():
         valid_mnb_count = (x_valid.shape[0] - 1) / mnb_size + 1
         x_train = theano.shared(x_train, name='x_train', borrow=True)
         x_valid = theano.shared(x_valid, name='x_valid', borrow=True)
-
 
         #   *** Creating a function for training the net
 
@@ -294,9 +294,10 @@ class LLBL():
                 log.debug('Mnb %d train cost %.5f', batch_ind, cost)
                 mnb_callback(self, epoch_ind, batch_ind)
                 return cost
-            train_costs.append(np.mean(map(mnb_train, xrange(train_mnb_count))))
+            train_costs.append(np.mean(map(mnb_train, range(train_mnb_count))))
 
-            valid_costs.append(np.mean(map(validate_f, range(valid_mnb_count))))
+            valid_costs.append(
+                np.mean(map(validate_f, range(valid_mnb_count))))
             epoch_callback(self, epoch_ind)
             train_times.append(time() - epoch_t0)
 

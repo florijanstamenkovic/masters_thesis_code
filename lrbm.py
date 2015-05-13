@@ -136,6 +136,8 @@ class LRBM():
         _hid_in_exp /= _hid_in_exp.mean(axis=2).mean(axis=1).dimshuffle(0, 'x', 'x')
         _probs = _hid_in_exp.prod(axis=2)
         _probs *= T.exp(T.dot(_partition, self.b_repr))
+        #   to enable the usage of smoothing, we'll expose the unnormalized partition
+        self.distr_w_unn = _probs
         self.distr_w = _probs / _probs.sum(axis=1).dimshuffle(0, 'x')
 
         #   we also need the probability of the conditioned term
@@ -155,7 +157,7 @@ class LRBM():
         _partition_given_h = -T.dot(self.vis_neg_cond, emb.T)
         _partition_given_h -= _partition_given_h.min(axis=1).dimshuffle(0, 'x')
         _partition_given_h = T.exp(-_partition_given_h)
-        # self.distribution_w_given_h = _partition_given_h / _partition_given_h.sum(axis=1).dimshuffle(0, 'x')
+        self.distribution_w_given_h = _partition_given_h / _partition_given_h.sum(axis=1).dimshuffle(0, 'x')
 
         #   reconstruction error that we want to reduce
         #   we use contrastive divergence to model the distribution

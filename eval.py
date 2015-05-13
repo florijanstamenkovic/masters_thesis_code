@@ -16,6 +16,7 @@ import ngram
 import util
 import data
 from llbl import LLBL
+from lrbm import LRBM
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ if not os.path.exists(_DIR):
 
 
 def main():
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.DEBUG)
     log.info("Performing final eval")
 
     #   get the data handling parameters
@@ -94,42 +95,47 @@ def main():
         log.info("Final eval of ngram model:")
         perplexity(best_lmbd, False)
 
-    def eval_llbl():
+    def eval_net(use_llbl=True, lmbds=[0.]):
         """
-        A function that creates, trains and evaluates LLBL
+        A function that creates, trains and evaluates an LRBM or LLBLs
         models with additive smoothing.
         """
         #   create and evaluate a LLBL
-        net = LLBL(n, vocab_size, d, 64353)
-        #   let's track how smoothing influences validation cost
-        llbl_lmbd = [0., 1e-6, 1e-4]
-        llbl_logloss = dict(zip(
-            llbl_lmbd, [[] for i in range(len(llbl_lmbd))]))
+        if use_llbl:
+            net = LLBL(n, vocab_size, d, 64353)
+        else:
+            net = LRBM(n, vocab_size, d, n_hid, 64353)
 
-        partition_exp_f = theano.function([net.input], net.partition_exp)
+        #   let's track how smoothing influences validation cost
+        lmbds_log_loss = dict(zip(lmbds, [[] for i in range(len(lmbds))]))
+
+        distr_w_unn = theano.function([net.input], net.distr_w_unn)
 
         def mnb_callback(llbl, epoch, mnb):
             if (mnb + 1) % _VALIDATE_MNB:
                 return
 
-            _probs = map(partition_exp_f, util.create_minibatches(
+            _probs = map(distr_w_unn, util.create_minibatches(
                 x_valid, None, mnb_size, False))
             _probs = np.vstack(_probs)
 
-            for lmbd in llbl_lmbd:
+            for lmbd in lmbds:
                 probs = _probs + lmbd
                 probs /= np.expand_dims(probs.sum(axis=1), axis=1)
                 probs = probs[np.arange(x_valid.shape[0]), x_valid[:, 0]]
+                log.debug('Probs mean: %.6f', probs.mean())
                 log_loss = -np.log(probs).mean()
                 perplexity = np.exp(log_loss)
-                log.info("LLBL, epoch %d, mnb %d, lmbd=%.6f:"
+                log.info("%s, epoch %d, mnb %d, lmbd=%.6f:"
                          " log_loss: %.2f, perplexity: %.2f",
+                         "LLBL" if use_llbl else "LRBM",
                          epoch, mnb, lmbd, log_loss, perplexity)
-                llbl_logloss[lmbd].append(log_loss)
+                lmbds_log_loss[lmbd].append(log_loss)
 
         net.mnb_callback = mnb_callback
         train_cost, valid_cost, _ = net.train(
-            x_train, x_valid, mnb_size, epochs, eps_llbl, alpha)
+            x_train, x_valid, mnb_size, epochs,
+            eps_llbl if use_llbl else eps_lrbm, alpha)
 
         #   plot training progress info
         #   first we need values for the x-axis (minibatch count)
@@ -141,15 +147,15 @@ def main():
         x_axis_mnb = np.hstack(([0], x_axis_mnb))
         #   now plot the log losses
         plt.figure(figsize=(16, 12))
-        for lmbd, scores in llbl_logloss.iteritems():
+        for lmbd, scores in lmbds_log_loss.iteritems():
             plt.plot(x_axis_mnb, scores, label='lmbd=%.5f' % lmbd)
-        plt.title('LLBL validation log-loss')
+        plt.title('%s validation log-loss' % "LLBL" if use_llbl else "LRBM",)
         plt.grid()
         plt.legend()
 
         plt.savefig(os.path.join(_DIR, "llbl_validation.pdf"))
 
-    eval_llbl()
+    eval_net(False, [0., 1e-8, 1e-6])
 
 
 if __name__ == '__main__':
