@@ -122,26 +122,61 @@ class LRBM():
 
         #   exact probablity of a single sample, given model params only
         #   first define a function that calculates the prob. of one sample
-        batch_size = self.input.shape[0]
-        _partition = T.concatenate([
-            emb.dimshuffle('x', 0, 1).repeat(batch_size, 0),
-            emb[self.input[:, 1:]].reshape((batch_size, 1, -1)).repeat(self.vocab_size, 1)
-        ], axis=2)
-        #   input to each hidden unit, for every input-repr in _partition
-        _hid_in = T.dot(_partition, self.w) + self.b_hid
-        #   a binom signifying a hidden unit being on or off
-        _hid_in_exp = (1 + T.exp(_hid_in))
-        #   divide with mean for greater numeric stability
-        #   does not change end probability
-        _hid_in_exp /= _hid_in_exp.mean(axis=2).mean(axis=1).dimshuffle(0, 'x', 'x')
-        _probs = _hid_in_exp.prod(axis=2)
-        _probs *= T.exp(T.dot(_partition, self.b_repr))
-        #   to enable the usage of smoothing, we'll expose the unnormalized partition
-        self.distr_w_unn = _probs
-        self.distr_w = _probs / _probs.sum(axis=1).dimshuffle(0, 'x')
+        def _probability(sample):
+            #   a matrix with input-representations for all words,
+            #   conditioned on the conditioning terms of the sample
+            _partition = T.concatenate([
+                emb,
+                T.tile(emb[sample[1:]].flatten().dimshuffle(('x', 0)),
+                       (self.vocab_size, 1))],
+                axis=1)
+            #   input to each hidden unit, for every input-repr in _partition
+            _hid_in = T.dot(_partition, self.w) + self.b_hid
+            #   a binom signifying a hidden unit being on or off
+            _hid_in_exp = (1 + T.exp(_hid_in))
+            #   divide with mean for greater numeric stability
+            #   does not change end probability
+            _hid_in_exp /= _hid_in_exp.mean()
+            _probs = _hid_in_exp.prod(axis=1)
+            return _probs * T.exp(T.dot(_partition, self.b_repr))
+        #   now use theano scan to calculate probabilities for all inputs
+        self.distr_w_unn, _ = theano.scan(_probability,
+                                          outputs_info=None,
+                                          sequences=[input])
 
-        #   we also need the probability of the conditioned term
+        # for smoothing purposes expose the unnormed partition
+        self.distr_w = self.distr_w_unn / \
+            self.distr_w_unn.sum(axis=1).dimshuffle(0, 'x')
+
+        #   probability of the conditioned term
         self.probability = self.distr_w[T.arange(input.shape[0]), input[:, 0]]
+
+        #   A faster, but more memory-intensive version of the computation
+        if False:
+            #   exact probablity of a single sample, given model params only
+            #   first define a function that calculates the prob. of one sample
+            batch_size = self.input.shape[0]
+            _partition = T.concatenate([
+                emb.dimshuffle('x', 0, 1).repeat(batch_size, 0),
+                emb[self.input[:, 1:]].reshape(
+                    (batch_size, 1, -1)).repeat(self.vocab_size, 1)
+            ], axis=2)
+            #   input to each hidden unit, for every input-repr in _partition
+            _hid_in = T.dot(_partition, self.w) + self.b_hid
+            #   a binom signifying a hidden unit being on or off
+            _hid_in_exp = (1 + T.exp(_hid_in))
+            #   divide with mean for greater numeric stability
+            #   does not change end probability
+            _hid_in_exp /= _hid_in_exp.mean(axis=2).mean(
+                axis=1).dimshuffle(0, 'x', 'x')
+            _probs = _hid_in_exp.prod(axis=2)
+            _probs *= T.exp(T.dot(_partition, self.b_repr))
+            # for smoothing purposes expose the unnormed partition
+            self.distr_w_unn = _probs
+            self.distr_w = _probs / _probs.sum(axis=1).dimshuffle(0, 'x')
+
+            #  we also need the probability of the conditioned term
+            self.probability = self.distr_w[T.arange(input.shape[0]), input[:, 0]]
 
         #   returns the unnormalized probabilities of a set of samples
         #   useful only for relative comparison of samples
@@ -154,10 +189,35 @@ class LRBM():
 
         #   distribution of the vocabulary, given hidden state
         #   we use vis_neg because it's exactly W * hid_act
-        _partition_given_h = -T.dot(self.vis_neg_cond, emb.T)
-        _partition_given_h -= _partition_given_h.min(axis=1).dimshuffle(0, 'x')
-        _partition_given_h = T.exp(-_partition_given_h)
-        self.distribution_w_given_h = _partition_given_h / _partition_given_h.sum(axis=1).dimshuffle(0, 'x')
+        #   first define a function that calcs the distribution
+        #   given a single hidden_activation sample
+        def _distribution_w(vis_neg_cond):
+            #   since only the conditioned term differs in the partition
+            #   exp(other_terms) cancels out in the fraction
+            _partition_en = -T.dot(emb, vis_neg_cond)
+            #   subract C (equal to dividing with C in exp-space)
+            #   so that exp(_partition) fits in float32
+            _partition_en -= _partition_en.min() + 70
+            #   exponentiate, normalize and return
+            _partition = T.exp(-_partition_en)
+            return _partition / _partition.sum()
+
+        #   now calculate probability distributions for the whole input
+        self.distribution_w_given_h, _ = theano.scan(
+            _distribution_w,
+            outputs_info=None,
+            sequences=[self.vis_neg_cond])
+
+        #   A faster, but more memory-demanding version of
+        #   The distribution_w_given_h computation
+        if False:
+            #   distribution of the vocabulary, given hidden state
+            #   we use vis_neg because it's exactly W * hid_act
+            _part_given_h = -T.dot(self.vis_neg_cond, emb.T)
+            _part_given_h -= _part_given_h.min(axis=1).dimshuffle(0, 'x')
+            _part_given_h = T.exp(-_part_given_h)
+            self.distribution_w_given_h = _part_given_h / _part_given_h.sum(
+                axis=1).dimshuffle(0, 'x')
 
         #   reconstruction error that we want to reduce
         #   we use contrastive divergence to model the distribution

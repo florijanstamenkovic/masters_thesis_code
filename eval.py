@@ -20,10 +20,6 @@ from lrbm import LRBM
 
 log = logging.getLogger(__name__)
 
-#   we won't validate nets only after each epoch (large dataset)
-#   but after each _VALIDATE_MNB minibatches
-_VALIDATE_MNB = 25
-
 
 _DIR = 'eval'
 if not os.path.exists(_DIR):
@@ -43,6 +39,7 @@ def main():
     bool_format = lambda s: s.lower() in ["1", "true", "yes", "t", "y"]
     ft_format = lambda s: map(bool_format, s)
     ftr_use = np.array(util.argv('-u', ft_format("001000"), ft_format))
+    val_per_epoch = util.argv('-v', 10, int)
 
     #   nnet rbm-s only support one-feature ngrams
     assert ftr_use.sum() == 1
@@ -50,8 +47,8 @@ def main():
     #   get nnet training parameters
     epochs = util.argv('-ep', 20, int)
     alpha = util.argv('-a', 0.5, float)
-    eps_llbl = util.argv('-eps_llbl', 0.1, float)
-    eps_lrbm = util.argv('-eps_lrbm', 0.01, float)
+    eps_llbl = util.argv('-eps_llbl', 0.05, float)
+    eps_lrbm = util.argv('-eps_lrbm', 0.005, float)
     mnb_size = util.argv('-mnb', 500, int)
     n_hid = util.argv('-h', 1000, int)
     d = util.argv('-d', 150, int)
@@ -66,7 +63,12 @@ def main():
     log.info("Data loaded, %d ngrams", ngrams.shape[0])
 
     #   split data into sets
-    x_train, x_valid, x_test = util.dataset_split(ngrams, 0.05, 0.05, rng=456)
+    x_train, x_valid, x_test = util.dataset_split(
+        ngrams, int(min(1e4, 0.05 * ngrams.shape[0])), 0.05, rng=456)
+
+    #   how often we validate
+    mnb_count = (x_train.shape[0] - 1) / mnb_size + 1
+    _VALIDATE_MNB = mnb_count / val_per_epoch
 
     def eval_ngram():
         """
@@ -87,7 +89,7 @@ def main():
             probability = ngram_model.probability(dataset)
             log_loss = -np.log(probability).mean()
             perplexity = np.exp(log_loss)
-            log.info("Ngrams, lmbd=%.5f: log_loss: %.2f, perplexity: %.2f",
+            log.info("Ngrams, lmbd=%.e: log_loss: %.4f, perplexity: %.2f",
                      lmbd, log_loss, perplexity)
             return perplexity
 
@@ -111,8 +113,8 @@ def main():
 
         distr_w_unn = theano.function([net.input], net.distr_w_unn)
 
-        def mnb_callback(llbl, epoch, mnb):
-            if (mnb + 1) % _VALIDATE_MNB:
+        def mnb_callback(net, epoch, mnb):
+            if (max(epoch, 0) * mnb_count + mnb + 1) % _VALIDATE_MNB:
                 return
 
             _probs = map(distr_w_unn, util.create_minibatches(
@@ -126,8 +128,8 @@ def main():
                 log.debug('Probs mean: %.6f', probs.mean())
                 log_loss = -np.log(probs).mean()
                 perplexity = np.exp(log_loss)
-                log.info("%s, epoch %d, mnb %d, lmbd=%.6f:"
-                         " log_loss: %.2f, perplexity: %.2f",
+                log.info("%s, epoch %d, mnb %d, lmbd=%.e:"
+                         " log_loss: %.4f, perplexity: %.2f",
                          "LLBL" if use_llbl else "LRBM",
                          epoch, mnb, lmbd, log_loss, perplexity)
                 lmbds_log_loss[lmbd].append(log_loss)
@@ -139,7 +141,6 @@ def main():
 
         #   plot training progress info
         #   first we need values for the x-axis (minibatch count)
-        mnb_count = (x_train.shape[0] - 1) / mnb_size + 1
         mnb_valid_ep = mnb_count / _VALIDATE_MNB
         x_axis_mnb = np.tile(
             (np.arange(mnb_valid_ep) + 1) * _VALIDATE_MNB, epochs)
@@ -148,14 +149,16 @@ def main():
         #   now plot the log losses
         plt.figure(figsize=(16, 12))
         for lmbd, scores in lmbds_log_loss.iteritems():
-            plt.plot(x_axis_mnb, scores, label='lmbd=%.5f' % lmbd)
-        plt.title('%s validation log-loss' % "LLBL" if use_llbl else "LRBM",)
+            plt.plot(x_axis_mnb, scores, label='lmbd=%.e' % lmbd)
+        plt.title('%s validation log-loss' % "LLBL" if use_llbl else "LRBM")
         plt.grid()
         plt.legend()
 
         plt.savefig(os.path.join(_DIR, "llbl_validation.pdf"))
 
-    eval_net(False, [0., 1e-8, 1e-6])
+    # eval_ngram()
+    eval_net(True, [0., 1e-20, 1e-10])
+    # eval_net(False, [0., 1e-20, 1e-10])
 
 
 if __name__ == '__main__':
