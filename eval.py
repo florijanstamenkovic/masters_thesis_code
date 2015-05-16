@@ -156,8 +156,8 @@ def main():
 
         plt.savefig(os.path.join(_DIR, "llbl_validation.pdf"))
 
-    # eval_ngram()
-    eval_net(True, [0., 1e-20, 1e-10])
+    eval_ngram()
+    # eval_net(True, [0., 1e-20, 1e-10])
     # eval_net(False, [0., 1e-20, 1e-10])
 
 

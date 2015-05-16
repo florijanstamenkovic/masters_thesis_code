@@ -1,10 +1,3 @@
-"""
-Module for evaluating the RBM energy-based neural net
-language models on the Microsoft
-Sentences Completion Challenge dataset (obtained through
-the 'data' module).
-"""
-
 import os
 import sys
 import util
@@ -15,8 +8,9 @@ import theano
 import numpy as np
 
 import data
-from lrbm import LRBM
+# from lrbm import LRBM
 from llbl import LLBL
+from lmlp import LMLP
 from ngram import NgramModel
 
 
@@ -26,7 +20,7 @@ _DIR = 'nnet_models'
 #   how many ngrams from the validation set should be used
 #   when evaluating exact log-likelihood... the whole validation
 #   set can't be used because this is SLOW
-_LL_SIZE = 100
+_LL_SIZE = 500
 
 #   we won't validate only after each epoch (large dataset)
 #   but after each _VALIDATE_MNB minibatches
@@ -70,7 +64,7 @@ def random_ngrams(ngrams, vocab_size, all=False, dist=None, shuffle=False):
 
 def main():
     """
-    Trains and evaluates RBM energy based neural net
+    Trains and evaluates neural
     language models on the Microsoft Sentence Completion
     Challenge dataset.
 
@@ -88,13 +82,13 @@ def main():
 
     Neural-net specific cmd-line flags:
         -ep EPOCHS : Number of training epochs, defaults to 20.
-        -a ALPHA : The alpha parameter of the LRBM, defaults to 0.5
+        -a ALPHA : The alpha parameter of the model, defaults to 0.5
         -eps EPS : Learning rate, defaults to 0.005.
         -mnb MBN_SIZE : Size of the minibatch, defaults to 2000.
 
     """
     logging.basicConfig(level=logging.DEBUG)
-    log.info("RBM energy-based neural net language model")
+    log.info("Evaluating model")
 
     #   get the data handling parameters
     ts_reduction = util.argv('-s', None, int)
@@ -106,7 +100,7 @@ def main():
     ft_format = lambda s: map(bool_format, s)
     ftr_use = np.array(util.argv('-u', ft_format("001000"), ft_format))
 
-    #   nnet rbm-s only support one-feature ngrams
+    #   nnets only support one-feature ngrams
     assert ftr_use.sum() == 1
 
     #   get nnet training parameters
@@ -146,7 +140,7 @@ def main():
 
     #   the directory for this model
     dir = "%s_%s_%d-gram_features-%s_data-subset_%r-min_occ_%r-min_files_%r" % (
-        "llbl" if use_lbl else "lrbm",
+        "llbl" if use_lbl else "lmlp",
         "tree" if use_tree else "linear", n,
         "".join([str(int(b)) for b in ftr_use]),
         ts_reduction, min_occ, min_files)
@@ -159,17 +153,18 @@ def main():
         n_hid, d, mnb_size, epochs, eps, alpha)
 
     #   store the logs
-    log_file_handler = logging.FileHandler(os.path.join(dir, file + ".log"))
-    log_file_handler.setLevel(logging.INFO)
-    # logging.root.addHandler(log_file_handler)
+    if False:
+        log_file_handler = logging.FileHandler(
+            os.path.join(dir, file + ".log"))
+        log_file_handler.setLevel(logging.INFO)
+        logging.root.addHandler(log_file_handler)
 
     #   we will plot log-lik ratios for every _VALIDATE_MNB minibatches
     #   we will also plot true mean log-lik
-    x_valid_ll_ratio = []
-    x_valid_ll = []
-    x_train_ll = []
-    x_valid_p_mean = []
-    x_train_p_mean = []
+    valid_on = {"x_valid": x_valid[:_LL_SIZE], "x_valid_r": x_valid_r[
+        :_LL_SIZE], "x_train": x_train[:_LL_SIZE]}
+    valid_ll = {k: [] for k in valid_on.keys()}
+    valid_p_mean = {k: [] for k in valid_on.keys()}
 
     def mnb_callback(net, epoch, mnb):
         """
@@ -180,30 +175,20 @@ def main():
 
         #   calculate log likelihood using the exact probability
         probability_f = theano.function([net.input], net.probability)
-        p_valid = probability_f(x_valid[:_LL_SIZE])
-        p_train = probability_f(x_train[:_LL_SIZE])
-
-        #   track mean probabilities and log-likelihood
-        x_valid_p_mean.append(p_valid.mean())
-        x_train_p_mean.append(p_train.mean())
-        x_valid_ll.append(np.log(p_valid).mean())
-        x_train_ll.append(np.log(p_train).mean())
-
-        #   also calculate the probability ratio between normal validation set
-        #   and the randomized one
-        unnp = theano.function([net.input], net.unnp)(
-            np.vstack((x_valid[:_LL_SIZE], x_valid_r[:_LL_SIZE])))
-
-        x_valid_ll_ratio.append(np.log(unnp[:_LL_SIZE] / unnp[_LL_SIZE:]).mean())
+        for name, valid_set in valid_on.iteritems():
+            p = probability_f(valid_set)
+            valid_ll[name].append(np.log(p).mean())
+            valid_p_mean[name].append(p.mean())
 
         log.info('Epoch %d, mnb: %d, x_valid mean-log-lik: %.5f'
                  ' , x_valid p-mean: %.5f'
                  ' , ln(p(x_valid) / p(x_valid_r).mean(): %.5f',
-                 epoch, mnb, x_valid_ll[-1], x_valid_p_mean[-1],
-                 x_valid_ll_ratio[-1])
+                 epoch, mnb, valid_ll["x_valid"][-1],
+                 valid_p_mean["x_valid"][-1],
+                 valid_ll["x_valid"][-1] - valid_ll["x_valid_r"][-1])
 
     #   track if the model progresses on the sentence completion challenge
-    sent_challenge = []
+    # sent_challenge = []
 
     def epoch_callback(net, epoch):
 
@@ -214,19 +199,19 @@ def main():
             ["\n\t%s: %.5f +- %.5f" % pms for pms in param_mean_std]))
 
         #   evaluate model on the sentence completion challenge
-        unnp_f = theano.function([net.input], net.unnp)
-        qg_log_lik = [[np.log(unnp_f(q)).sum() for q in q_g]
-                      for q_g in q_groups]
-        predictions = map(lambda q_g: np.argmax(q_g), qg_log_lik)
-        sent_challenge.append((np.array(predictions) == answers).mean())
-        log.info('Epoch %d sentence completion eval score: %.4f',
-                 epoch, sent_challenge[-1])
+        # probability_f = theano.function([net.input], net.probability)
+        # qg_log_lik = [[np.log(probability_f(q)).sum() for q in q_g]
+        #               for q_g in q_groups]
+        # predictions = map(lambda q_g: np.argmax(q_g), qg_log_lik)
+        # sent_challenge.append((np.array(predictions) == answers).mean())
+        # log.info('Epoch %d sentence completion eval score: %.4f',
+        #          epoch, sent_challenge[-1])
 
     log.info("Creating model")
     if use_lbl:
         net = LLBL(n, vocab_size, d, 12345)
     else:
-        net = LRBM(n, vocab_size, d, n_hid, 12345)
+        net = LMLP(n, vocab_size, d, 12345)
     net.mnb_callback = mnb_callback
     net.epoch_callback = epoch_callback
     train_cost, valid_cost, _ = net.train(
@@ -251,21 +236,17 @@ def main():
     plt.legend(loc=1)
 
     plt.subplot(222)
-    plt.plot(x_axis_mnb, x_train_ll, 'b-', label='train')
-    plt.plot(x_axis_mnb, x_valid_ll, 'g-', label='valid')
-    plt.ylim((np.log(0.5 / vocab_size), max(max(x_train_ll), max(x_valid_ll)) + 0.5))
+    for name, valid_set in valid_ll.items():
+        plt.plot(x_axis_mnb, valid_set, label=name)
+    plt.ylim((np.log(0.5 / vocab_size),
+              max([max(v) for v in valid_ll.values()]) + 0.5))
     plt.title('log-likelihood(x)')
     plt.grid()
     plt.legend(loc=4)
 
-    plt.subplot(223)
-    plt.plot(x_axis_mnb, x_valid_ll_ratio, 'g-')
-    plt.title('ln(p(x_valid) / p(x_valid_r)).mean()')
-    plt.grid()
-
     plt.subplot(224)
-    plt.plot(x_axis_mnb, x_train_p_mean, 'b-', label='train')
-    plt.plot(x_axis_mnb, x_valid_p_mean, 'g-', label='valid')
+    for name, valid_set in valid_p_mean.items():
+        plt.plot(x_axis_mnb, valid_set, label=name)
     plt.title('p(x).mean()')
     plt.grid()
     plt.legend(loc=4)
