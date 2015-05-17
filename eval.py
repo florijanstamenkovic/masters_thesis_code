@@ -96,7 +96,7 @@ def main():
                      smoothing, log_loss, perplexity)
             return perplexity
 
-        best_lmbd = ngram_lmbd[np.argmin(map(perplexity, ngram_lmbd))]
+        best_lmbd = smoothing_param[np.argmin(map(perplexity, smoothing_param))]
         log.info("Final eval of ngram model:")
         perplexity(best_lmbd, False)
 
@@ -162,7 +162,7 @@ def main():
     #   evaluate ngram models, additive and knesser-ney
     ngram_lmbd = [1e-5, 1e-4, 1e-3, 1e-2, 1e-1]
     eval_ngram(ngram_lmbd, False)
-    ngram_delta = [0.25, 0.5, 0.75, 1.0]
+    ngram_delta = [0.4, 0.8, 0.9, 1.0]
     eval_ngram(ngram_delta, True)
 
     # eval_net(True, [0., 1e-20, 1e-10])

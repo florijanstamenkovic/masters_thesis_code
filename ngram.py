@@ -72,7 +72,8 @@ class Counts(object):
 
     @staticmethod
     def unique_rows(a, return_counts=False):
-        a_void = np.ascontiguousarray(a).view(np.dtype((np.void, a.dtype.itemsize * a.shape[1])))
+        a_void = np.ascontiguousarray(a).view(
+            np.dtype((np.void, a.dtype.itemsize * a.shape[1])))
 
         if return_counts:
             a_unique, counts = util.unique_with_counts(a_void)
@@ -145,7 +146,7 @@ class Counts(object):
 
         #   counts of conditioned that continue the conditioning
         ngrams_no_conditioned = np.array(ngrams)
-        ngrams_no_conditioned[:, self.feature_count:] = 0
+        ngrams_no_conditioned[:, :self.feature_count] = 0
         counts_cont = map(lambda ngram: self.counts_cont[tuple(ngram)],
                           np.dot(ngrams_no_conditioned, multipliers))
 
@@ -247,6 +248,13 @@ class NgramModel():
         :param lmbd: Lambda parameter for additive (Laplace) smoothing.
         """
 
+        #   remember model hyperparameters
+        self.n = n
+        self.feature_sizes = np.array(feature_sizes)[feature_use]
+        self.feature_count = feature_use.sum()
+        self._lmbd = lmbd
+        self._delta = delta
+
         #   count ngram occurences
         self.counts = Counts.get(
             n, use_tree, feature_use, feature_sizes,
@@ -257,14 +265,7 @@ class NgramModel():
         if n > 1:
             self.lower_order = NgramModel(
                 n - 1, use_tree, feature_use, feature_sizes, ts_reduction,
-                min_occ, min_files, lmbd, delta, trainset)
-
-        #   remember model hyperparameters
-        self.n = n
-        self.feature_sizes = np.array(feature_sizes)[feature_use]
-        self.feature_count = len(feature_use)
-        self._lmbd = lmbd
-        self._delta = delta
+                min_occ, min_files, lmbd, delta, trainset[:, self.feature_sizes.size:])
 
     def set_delta(self, delta):
         self._delta = delta
@@ -290,7 +291,7 @@ class NgramModel():
         if self.n == 1:
             normalizer = self.counts.counts_sum
         else:
-            normalizer = self.lower_order.counts.count(ngrams[:, 1:])[0]
+            normalizer = self.lower_order.counts.count(ngrams[:, self.feature_count:])[0]
 
         smoother = self._lmbd * np.prod(self.feature_sizes)
         return (counts + self._lmbd) / (normalizer + smoother)
@@ -300,13 +301,13 @@ class NgramModel():
         if self.n == 1:
             return self.probability_additive(ngrams)
 
-        counts, counts_preceed, counts_cont = self.counts.counts(ngrams)
+        counts, counts_preceed, counts_cont = self.counts.count(ngrams)
 
         #   base probability that will be backed off
         #   when not using p_continuation, it's the plain old count
         if not _p_cont:
             base = base = counts
-            normalizer = self.counts.counts_sum
+            normalizer = self.lower_order.counts.count(ngrams[:, self.feature_count:])[0]
 
         #   when using p_continuation, use the the number of preceeding
         #   words types as counts, and normalize accordingly
@@ -322,10 +323,21 @@ class NgramModel():
         backoff = self._delta * counts_cont
 
         #   lower order probability
-        lower = self.lower_order.probability_kn(ngrams[:, self.feature_count:], True)
+        lower = self.lower_order.probability_kn(
+            ngrams[:, self.feature_count:], True)
+
+        #   for unseen conditioning terms (normalizer == 0)
+        #   we need to force (0/0 = 1)
+        #   only applicable when not doing p_continuation
+        if not _p_cont:
+            mask = normalizer == 0
+            assert base[mask].sum() == 0
+            assert counts_cont[mask].sum() == 0
+            normalizer[mask] = 1
+            backoff[mask] = self._delta
 
         #   and finally the total
-        return (base + backoff * lower) / float(normalizer)
+        return (base + backoff * lower) / normalizer.astype('float32')
 
 
 def main():
