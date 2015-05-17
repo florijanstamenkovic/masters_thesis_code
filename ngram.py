@@ -257,14 +257,24 @@ class NgramModel():
         if n > 1:
             self.lower_order = NgramModel(
                 n - 1, use_tree, feature_use, feature_sizes, ts_reduction,
-                min_occ, min_files, lmbd, trainset)
+                min_occ, min_files, lmbd, delta, trainset)
 
         #   remember model hyperparameters
         self.n = n
         self.feature_sizes = np.array(feature_sizes)[feature_use]
         self.feature_count = len(feature_use)
-        self.lmbd = lmbd
-        self.delta = delta
+        self._lmbd = lmbd
+        self._delta = delta
+
+    def set_delta(self, delta):
+        self._delta = delta
+        if self.n > 1:
+            self.lower_order.set_delta(delta)
+
+    def set_lmbd(self, lmbd):
+        self._lmbd = lmbd
+        if self.n > 1:
+            self.lower_order.set_lmbd(lmbd)
 
     def probability_additive(self, ngrams):
         """
@@ -282,8 +292,8 @@ class NgramModel():
         else:
             normalizer = self.lower_order.counts.count(ngrams[:, 1:])[0]
 
-        smoother = self.lmbd * np.prod(self.feature_sizes)
-        return (counts + self.lmbd) / (normalizer + smoother)
+        smoother = self._lmbd * np.prod(self.feature_sizes)
+        return (counts + self._lmbd) / (normalizer + smoother)
 
     def probability_kn(self, ngrams, _p_cont=False):
 
@@ -306,19 +316,16 @@ class NgramModel():
 
         #   discount the counts
         counts = np.maximum(
-            counts - self.delta, np.zeros(1, dtype=counts.dtype))
+            counts - self._delta, np.zeros(1, dtype=counts.dtype))
 
         #   calculate the backoff factor
-        backoff = self.delta * counts_cont
+        backoff = self._delta * counts_cont
 
         #   lower order probability
         lower = self.lower_order.probability_kn(ngrams[:, self.feature_count:], True)
 
         #   and finally the total
         return (base + backoff * lower) / float(normalizer)
-
-    def __str__(self):
-        return "%d-grams_%.2f-smoothing" % (self.n, self.lmbd)
 
 
 def main():

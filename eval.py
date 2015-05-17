@@ -83,10 +83,10 @@ def main():
         def perplexity(smoothing, valid_set=True):
             dataset = x_valid if valid_set else x_test
             if use_kn:
-                ngram_model.delta = smoothing
+                ngram_model.set_delta(smoothing)
                 probability = ngram_model.probability_kn(dataset)
             else:
-                ngram_model.lmbd = smoothing
+                ngram_model.set_lmbd(smoothing)
                 probability = ngram_model.probability_additive(dataset)
 
             log_loss = -np.log(probability).mean()
