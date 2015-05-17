@@ -202,6 +202,28 @@ def try_pickle_dump(data, file_name, zip=None, entry_name="Data.pkl"):
             file.close()
 
 
+def unique_with_counts(array):
+    """
+    Wrapper numpy.unique(return_counts=True) that does the same
+    thing (but less efficient) on numpy versions prior to 1.9.x
+    when that flat was introduced. If running numpy of version
+    higher then 1.9.x then the numpy version is used.
+    """
+
+    if "_NP_RETURN_COUNTS" not in globals():
+        np_ver = map(int, np.version.version.split('.'))
+        globals()["_NP_RETURN_COUNTS"] = np_ver[0] > 1 or np_ver[1] > 8
+
+    if globals()["_NP_RETURN_COUNTS"]:
+        return np.unique(array, return_counts=True)
+    else:
+        values = np.unique(array)
+        counts = np.zeros(values.size, dtype='uint32')
+        for ind, value in enumerate(values):
+            counts[ind] = (array == value).sum()
+        return (values, counts)
+
+
 def labels_to_indices(labels):
     """
     Converts an iterable of labels into

@@ -70,6 +70,16 @@ class Counts(object):
         cls._COUNTS_CACHE[path] = counts
         return counts
 
+    @staticmethod
+    def unique_rows(a, return_counts=False):
+        a_void = np.ascontiguousarray(a).view(np.dtype((np.void, a.dtype.itemsize * a.shape[1])))
+
+        if return_counts:
+            a_unique, counts = util.unique_with_counts(a_void)
+            return a_unique.view(a.dtype).reshape(-1, a.shape[1]), counts
+        else:
+            return np.unique(a_void).view(a.dtype).reshape(-1, a.shape[1])
+
     def __init__(self, feature_sizes, ngrams):
         """
         Creates the ngram counter. n is infered from
@@ -82,25 +92,42 @@ class Counts(object):
         """
         super(Counts, self).__init__()
 
-        self.n = ngrams.shape[1] / feature_sizes.size
+        self.feature_count = feature_sizes.size
+        self.n = ngrams.shape[1] / self.feature_count
         self.feature_sizes = feature_sizes
 
-        log.info("Counting %d-grams", self.n)
-
         #   calculate the shape of the accumulator
-        #   and convert ngrams from (N, n) shape to (N, 2)
         cnt_shape, multipliers = self.reduced_ngrams_mul()
-        ngrams = np.dot(ngrams, multipliers.T)
 
-        #   create the accumulator
-        counts = coo_matrix(
+        log.info("Counting preceeds and continuations")
+        #   first create an array of unique ngrams
+        ngrams_unique = Counts.unique_rows(ngrams)
+        #   now marginalize on the conditioned term
+        #   result is the number of unique conditioning (n-1) grams
+        #   that preceed a conditioned term
+        self.counts_preceed = np.zeros(feature_sizes, dtype='uint32')
+        unique_cp, counts_cp = Counts.unique_rows(
+            ngrams_unique[:, :self.feature_count], True)
+        self.counts_preceed[unique_cp] = counts_cp
+        self.counts_preceed_sum = self.counts_preceed.sum()
+        #   now marginalize on the conditioning (n-1) grams
+        #   results is the number of unique continuations for each
+        #   preceeding (n-1)-gram
+        #   this is a larger word-space so we'll use sparsity
+        ngrams_unique[:, :self.feature_count] = 0
+        unique_cc, counts_cc = Counts.unique_rows(ngrams_unique, True)
+        unique_cc = np.dot(unique_cc, multipliers.T)
+        self.counts_cont = coo_matrix(
+            (counts_cc, (unique_cc[:, 0], unique_cc[:, 1])), shape=cnt_shape,
+            dtype='uint32').tocsc()
+
+        log.info("Counting %d-grams", self.n)
+        ngrams = np.dot(ngrams, multipliers.T)
+        self.counts = coo_matrix(
             (np.ones(ngrams.shape[0], dtype='uint8'),
                 (ngrams[:, 0], ngrams[:, 1])), shape=cnt_shape,
             dtype='uint32').tocsc()
-
-        log.info("Counting done, summing up")
-        self.counts = counts
-        self.count_sum = ngrams.shape[0]
+        self.counts_sum = ngrams.shape[0]
 
     def count(self, ngrams):
         """
@@ -109,9 +136,26 @@ class Counts(object):
         :param ngrams: A numpy array of ngrams of shape (N, n * feature_count).
         :return: A numpy array of counts for given ngrams, of shape (N, ).
         """
-        ngrams = np.dot(ngrams, self.reduced_ngrams_mul()[1].T)
-        counts = map(lambda ngram: self.counts[tuple(ngram)], ngrams)
-        return np.array(counts, dtype='uint32')
+        multipliers = self.reduced_ngrams_mul()[1].T
+
+        #   counts of conditioning terms that preceed the conditioned
+        counts_preceed = map(
+            lambda ngram: self.counts_preceed[tuple(ngram)],
+            ngrams[:, :self.feature_count])
+
+        #   counts of conditioned that continue the conditioning
+        ngrams_no_conditioned = np.array(ngrams)
+        ngrams_no_conditioned[:, self.feature_count:] = 0
+        counts_cont = map(lambda ngram: self.counts_cont[tuple(ngram)],
+                          np.dot(ngrams_no_conditioned, multipliers))
+
+        #   plain counts
+        counts = map(lambda ngram: self.counts[tuple(ngram)],
+                     np.dot(ngrams, multipliers))
+
+        return (np.array(counts, dtype='uint32'),
+                np.array(counts_preceed, dtype='uint32'),
+                np.array(counts_cont, dtype='uint32'))
 
     def reduced_ngrams_mul(self):
         """
@@ -190,7 +234,7 @@ class NgramModel():
     """
 
     def __init__(self, n, use_tree, feature_use, feature_sizes,
-                 ts_reduction, min_occ, min_files, lmbd, trainset):
+                 ts_reduction, min_occ, min_files, lmbd, delta, trainset):
         """
         Initializes the ngram model. Does not train it.
 
@@ -204,26 +248,25 @@ class NgramModel():
         """
 
         #   count ngram occurences
-        self.counts_n = Counts.get(
+        self.counts = Counts.get(
             n, use_tree, feature_use, feature_sizes,
             ts_reduction, min_occ, min_files, trainset)
-
-        #   remember the number of ngrams in trainset
-        self.counts_sum = trainset.shape[0]
 
         #   for all but unigrams, also count the occurences
         #   of the conditioning term
         if n > 1:
-            self.counts_nmin1 = Counts.get(
-                n - 1, use_tree, feature_use, feature_sizes,
-                ts_reduction, min_occ, min_files, trainset[:, 1:])
+            self.lower_order = NgramModel(
+                n - 1, use_tree, feature_use, feature_sizes, ts_reduction,
+                min_occ, min_files, lmbd, trainset)
 
         #   remember model hyperparameters
         self.n = n
         self.feature_sizes = np.array(feature_sizes)[feature_use]
+        self.feature_count = len(feature_use)
         self.lmbd = lmbd
+        self.delta = delta
 
-    def probability(self, ngrams):
+    def probability_additive(self, ngrams):
         """
         Calculates and returns the probability of
         a series of ngrams.
@@ -233,14 +276,46 @@ class NgramModel():
             as returned by 'data.process_string' function.
         :return: numpy array of shape (ngram_count, 1)
         """
-        c_n = self.counts_n.count(ngrams)
+        counts = self.counts.count(ngrams)[0]
         if self.n == 1:
-            c_nmin1 = self.counts_sum
+            normalizer = self.counts.counts_sum
         else:
-            c_nmin1 = self.counts_nmin1.count(ngrams[:, 1:])
+            normalizer = self.lower_order.counts.count(ngrams[:, 1:])[0]
 
-        normalizer = self.lmbd * np.prod(self.feature_sizes)
-        return (c_n + self.lmbd) / (c_nmin1 + normalizer)
+        smoother = self.lmbd * np.prod(self.feature_sizes)
+        return (counts + self.lmbd) / (normalizer + smoother)
+
+    def probability_kn(self, ngrams, _p_cont=False):
+
+        if self.n == 1:
+            return self.probability_additive(ngrams)
+
+        counts, counts_preceed, counts_cont = self.counts.counts(ngrams)
+
+        #   base probability that will be backed off
+        #   when not using p_continuation, it's the plain old count
+        if not _p_cont:
+            base = base = counts
+            normalizer = self.counts.counts_sum
+
+        #   when using p_continuation, use the the number of preceeding
+        #   words types as counts, and normalize accordingly
+        else:
+            base = counts_preceed
+            normalizer = self.counts.counts_preceed_sum
+
+        #   discount the counts
+        counts = np.maximum(
+            counts - self.delta, np.zeros(1, dtype=counts.dtype))
+
+        #   calculate the backoff factor
+        backoff = self.delta * counts_cont
+
+        #   lower order probability
+        lower = self.lower_order.probability_kn(ngrams[:, self.feature_count:], True)
+
+        #   and finally the total
+        return (base + backoff * lower) / float(normalizer)
 
     def __str__(self):
         return "%d-grams_%.2f-smoothing" % (self.n, self.lmbd)

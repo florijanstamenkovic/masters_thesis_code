@@ -394,7 +394,7 @@ def ngrams(n, tree, tokens, invalid_tokens=None):
     #   we only need it for linear ngrams
     if not tree:
         #   sentence lengths
-        _sent_inds, sent_lens = np.unique(sent_inds, return_counts=True)
+        _sent_inds, sent_lens = util.unique_with_counts(sent_inds)
         assert (_sent_inds == np.arange(_sent_inds.size)).all()
 
         #   sentence n-gram lengths

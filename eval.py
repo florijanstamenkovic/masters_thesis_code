@@ -70,27 +70,30 @@ def main():
     mnb_count = (x_train.shape[0] - 1) / mnb_size + 1
     _VALIDATE_MNB = mnb_count / val_per_epoch
 
-    def eval_ngram():
+    def eval_ngram(smoothing_param, use_kn=True):
         """
         A function that creates and evaluates ngram models
-        with additive smooting.
+        with [additive / knesser-ney] smooting.
         """
         #   get and eval Ngram model
         ngram_model = ngram.NgramModel(
             n, use_tree, ftr_use, feature_sizes,
-            ts_reduction, min_occ, min_files, 0.0, x_train)
+            ts_reduction, min_occ, min_files, 0.0, 0.0, x_train)
 
-        #   optimize lambda on the validation set
-        ngram_lmbd = [1e-5, 1e-4, 1e-3, 1e-2, 1e-1]
-
-        def perplexity(lmbd, valid_set=True):
-            ngram_model.lmbd = lmbd
+        def perplexity(smoothing, valid_set=True):
             dataset = x_valid if valid_set else x_test
-            probability = ngram_model.probability(dataset)
+            if use_kn:
+                ngram_model.delta = smoothing
+                probability = ngram_model.probability_kn(dataset)
+            else:
+                ngram_model.lmbd = smoothing
+                probability = ngram_model.probability_additive(dataset)
+
             log_loss = -np.log(probability).mean()
             perplexity = np.exp(log_loss)
-            log.info("Ngrams, lmbd=%.e: log_loss: %.4f, perplexity: %.2f",
-                     lmbd, log_loss, perplexity)
+            log.info("Ngrams %s, smoothing=%.e: log_loss: %.4f, perplexity: %.2f",
+                     "knesser_ney" if use_kn else "additive",
+                     smoothing, log_loss, perplexity)
             return perplexity
 
         best_lmbd = ngram_lmbd[np.argmin(map(perplexity, ngram_lmbd))]
@@ -156,7 +159,12 @@ def main():
 
         plt.savefig(os.path.join(_DIR, "llbl_validation.pdf"))
 
-    eval_ngram()
+    #   evaluate ngram models, additive and knesser-ney
+    ngram_lmbd = [1e-5, 1e-4, 1e-3, 1e-2, 1e-1]
+    eval_ngram(ngram_lmbd, False)
+    ngram_delta = [0.25, 0.5, 0.75, 1.0]
+    eval_ngram(ngram_delta, True)
+
     # eval_net(True, [0., 1e-20, 1e-10])
     # eval_net(False, [0., 1e-20, 1e-10])
 
