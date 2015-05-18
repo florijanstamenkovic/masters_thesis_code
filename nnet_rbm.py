@@ -10,6 +10,7 @@ import numpy as np
 import data
 # from lrbm import LRBM
 from llbl import LLBL
+from llbl2 import LLBL2
 from lmlp import LMLP
 from ngram import NgramModel
 
