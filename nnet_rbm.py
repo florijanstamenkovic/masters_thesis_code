@@ -131,8 +131,8 @@ def main():
     unigrams_data = data.load_ngrams(1, ftr_use, False, subset=ts_reduction,
                                      min_occ=min_occ, min_files=min_files)[0]
     unigrams_data = NgramModel(1, False, ftr_use, feature_sizes, ts_reduction,
-                               min_occ, min_files, 0.0, unigrams_data)
-    unigrams_dist = unigrams_data.probability(
+                               min_occ, min_files, 0.0, 0.0, unigrams_data)
+    unigrams_dist = unigrams_data.probability_additive(
         np.arange(vocab_size).reshape(vocab_size, 1))
     unigrams_dist /= unigrams_dist.sum()
     #   finally, generate validation sets with randomized term
