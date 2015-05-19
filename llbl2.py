@@ -1,11 +1,6 @@
 """
-Implementation of a Restricted Boltzmann Machine
-for language modeling. Based on (Mnih 2008.)
-
-Uses Theano, but does not utilize automatic gradient
-calculation based on free energy (like in the Theano
-RBM tutorial), but instead uses already defined CD
-and PCD expressions.
+Implementation of a log-bilinear language model,
+based on (Mnih, 2008.).
 """
 import numpy as np
 import theano
@@ -16,11 +11,11 @@ from time import time
 log = logging.getLogger(__name__)
 
 
-class LMLP():
+class LLBL2():
 
     def __init__(self, n, vocab_size, repr_size, rng=None):
 
-        log.info("Creating an LMLP, n=%d, vocab_size=%r, repr_size=%r",
+        log.info("Creating an LLBL, n=%d, vocab_size=%r, repr_size=%r",
                  n, vocab_size, repr_size)
 
         #   n-gram size
@@ -40,7 +35,7 @@ class LMLP():
         self.repr_size = repr_size
         self.vocab_size = vocab_size
         self.embedding = theano.shared(
-            value=numpy_rng.uniform(-1e-3, 1e-3, size=(
+            value=numpy_rng.uniform(-0.01, 0.01, size=(
                 vocab_size, repr_size)).astype(theano.config.floatX),
             name='embedding', borrow=True)
 
@@ -49,15 +44,22 @@ class LMLP():
             numpy_rng.uniform(
                 low=-4 * np.sqrt(6. / (vocab_size + (n - 1) * repr_size)),
                 high=4 * np.sqrt(6. / (vocab_size + (n - 1) * repr_size)),
-                size=((n - 1) * repr_size, vocab_size)
+                size=((n - 1) * repr_size, repr_size)
             ),
             dtype=theano.config.floatX
         ), name='w', borrow=True)
 
-        #   if hidden biases are not provided, initialize them
-        self.b_out = theano.shared(
+        #   representation biases
+        self.b_repr = theano.shared(
+            value=np.zeros(repr_size, dtype=theano.config.floatX),
+            name='b_repr',
+            borrow=True
+        )
+
+        #   word biases
+        self.b_word = theano.shared(
             value=np.zeros(vocab_size, dtype=theano.config.floatX),
-            name='b_out',
+            name='b_word',
             borrow=True
         )
 
@@ -79,9 +81,16 @@ class LMLP():
         input_repr = emb[input[:, 1:]].flatten(2)
         self.input_repr = input_repr
 
-        output = T.dot(input_repr, self.w) + self.b_out
+        #   use linear composition of the input
+        composition = T.dot(input_repr, self.w) + self.b_repr
+        #   calculate corelation with the "output"
+        correlation = T.dot(composition, emb.T) + self.b_word
+        #   exponantiate to make it log-bilienar
+        correlation = T.exp(correlation)
 
-        self.probability = T.nnet.softmax(output)[T.arange(input.shape[0]), input[:, 0]]
+        #   define probability and cost
+        self.probability = T.nnet.softmax(correlation)[
+            T.arange(input.shape[0]), input[:, 0]]
         self.cost = -T.log(self.probability).mean()
 
     def params(self, symbolic=False):
@@ -97,7 +106,8 @@ class LMLP():
         r_val = {
             "w": self.w,
             "embedding": self.embedding,
-            "b_out": self.b_out,
+            "b_repr": self.b_repr,
+            "b_word": self.b_word,
         }
 
         if not symbolic:
@@ -109,7 +119,7 @@ class LMLP():
     def train(self, x_train, x_valid, mnb_size, epochs, eps, alpha,
               steps=1, weight_cost=1e-4):
         """
-        Trains the LMLP with the given data. Returns a tuple containing
+        Trains the LLBL with the given data. Returns a tuple containing
         (costs, times, hid_unit_activation_histograms). All three
         elements are lists, one item per epoch except for 'times' that
         has an extra element (training start time).
@@ -126,7 +136,7 @@ class LMLP():
             learning rate based on epoch number and a list of
             error rates.
         :param alpha: float in range [0, 1]. Probability distribution
-            (LMLP) learning is multiplied with alpha, while representation
+            (LLBL) learning is multiplied with alpha, while representation
             learning (word-vectors) is multiplied with (1 - alpha).
         :param steps: The number of steps to be used in PCD.
             Integer or callable, or a callable that determines the
@@ -136,8 +146,8 @@ class LMLP():
             (weight decay).
         """
 
-        log.info('Training LMLP, epochs: %d, eps: %r, alpha: %.2f, steps:%d',
-                 epochs, eps, alpha, steps)
+        log.info('Training LLBL, epochs: %d, eps: %r, alpha: %.2f',
+                 epochs, eps, alpha)
 
         #   pack trainset into a shared variable
         train_mnb_count = (x_train.shape[0] - 1) / mnb_size + 1
@@ -146,10 +156,10 @@ class LMLP():
         x_valid = theano.shared(x_valid, name='x_valid', borrow=True)
 
         #   *** Creating a function for training the net
-
         #   first calculate CD "gradients"
         grad_w = T.grad(self.cost, self.w)
-        grad_b_out = T.grad(self.cost, self.b_out)
+        grad_b_word = T.grad(self.cost, self.b_word)
+        grad_b_repr = T.grad(self.cost, self.b_repr)
         grad_emb = T.grad(self.cost, self.embedding)
 
         #   add regularization to gradients
@@ -160,7 +170,8 @@ class LMLP():
         eps_th = T.scalar("eps", dtype=theano.config.floatX)
         updates = [
             (self.w, self.w - eps_th * alpha * grad_w),
-            (self.b_out, self.b_out - eps_th * alpha * grad_b_out),
+            (self.b_word, self.b_word - eps_th * alpha * grad_b_word),
+            (self.b_repr, self.b_repr - eps_th * alpha * grad_b_repr),
             (self.embedding, self.embedding - eps_th * (1 - alpha) * grad_emb)
         ]
 
@@ -204,7 +215,7 @@ class LMLP():
             if not isinstance(eps, float):
                 epoch_eps = eps(epoch_ind, train_costs)
             else:
-                epoch_eps = eps * (0.1 + 0.9 * 0.95 ** epoch_ind)
+                epoch_eps = eps * (0.1 + 0.9 * 0.9 ** epoch_ind)
 
             #   iterate learning through the minibatches
             def mnb_train(batch_ind):
@@ -212,7 +223,7 @@ class LMLP():
                 log.debug('Mnb %d train cost %.5f', batch_ind, cost)
                 mnb_callback(self, epoch_ind, batch_ind)
                 return cost
-            train_costs.append(np.mean(map(mnb_train, xrange(train_mnb_count))))
+            train_costs.append(np.mean(map(mnb_train, range(train_mnb_count))))
 
             valid_costs.append(
                 np.mean(map(validate_f, range(valid_mnb_count))))
