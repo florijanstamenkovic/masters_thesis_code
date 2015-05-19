@@ -143,8 +143,10 @@ class LMLP():
                  epochs, eps, alpha, steps)
 
         #   pack trainset into a shared variable
-        mnb_count = (x_train.shape[0] - 1) / mnb_size + 1
+        train_mnb_count = (x_train.shape[0] - 1) / mnb_size + 1
+        valid_mnb_count = (x_valid.shape[0] - 1) / mnb_size + 1
         x_train = theano.shared(x_train, name='x_train', borrow=True)
+        x_valid = theano.shared(x_valid, name='x_valid', borrow=True)
 
         #   *** Creating a function for training the net
 
@@ -178,8 +180,11 @@ class LMLP():
 
         #   a separate function we will use for validation
         validate_f = theano.function(
-            [self.input],
+            [index],
             self.cost,
+            givens={
+                self.input: x_valid[index * mnb_size: (index + 1) * mnb_size]
+            }
         )
 
         #   things we'll track through training, for reporting
@@ -209,9 +214,10 @@ class LMLP():
                 log.debug('Mnb %d train cost %.5f', batch_ind, cost)
                 mnb_callback(self, epoch_ind, batch_ind)
                 return cost
-            train_costs.append(np.mean(map(mnb_train, xrange(mnb_count))))
+            train_costs.append(np.mean(map(mnb_train, xrange(train_mnb_count))))
 
-            valid_costs.append(validate_f(x_valid))
+            valid_costs.append(
+                np.mean(map(validate_f, range(valid_mnb_count))))
             epoch_callback(self, epoch_ind)
             train_times.append(time() - epoch_t0)
 

@@ -22,11 +22,6 @@ _DIR = 'nnet_models'
 #   set can't be used because this is SLOW
 _LL_SIZE = 500
 
-#   we won't validate only after each epoch (large dataset)
-#   but after each _VALIDATE_MNB minibatches
-_VALIDATE_MNB = 10
-
-
 #   logger
 log = logging.getLogger(__name__)
 
@@ -99,6 +94,7 @@ def main():
     bool_format = lambda s: s.lower() in ["1", "true", "yes", "t", "y"]
     ft_format = lambda s: map(bool_format, s)
     ftr_use = np.array(util.argv('-u', ft_format("001000"), ft_format))
+    val_per_epoch = util.argv('-v', 10, int)
 
     #   nnets only support one-feature ngrams
     assert ftr_use.sum() == 1
@@ -165,6 +161,10 @@ def main():
         :_LL_SIZE], "x_train": x_train[:_LL_SIZE]}
     valid_ll = {k: [] for k in valid_on.keys()}
     valid_p_mean = {k: [] for k in valid_on.keys()}
+
+    #   how often we validate
+    mnb_count = (x_train.shape[0] - 1) / mnb_size + 1
+    _VALIDATE_MNB = mnb_count / val_per_epoch
 
     def mnb_callback(net, epoch, mnb):
         """
