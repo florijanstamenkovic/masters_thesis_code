@@ -7,11 +7,15 @@ calculation based on free energy (like in the Theano
 RBM tutorial), but instead uses already defined CD
 and PCD expressions.
 """
+
+import logging
+from time import time
+
 import numpy as np
 import theano
 import theano.tensor as T
-import logging
-from time import time
+
+import grad_descent
 
 log = logging.getLogger(__name__)
 
@@ -81,8 +85,15 @@ class LMLP():
 
         output = T.dot(input_repr, self.w) + self.b_out
 
-        self.probability = T.nnet.softmax(output)[T.arange(input.shape[0]), input[:, 0]]
+        self.probability = T.nnet.softmax(output)[
+            T.arange(input.shape[0]), input[:, 0]]
         self.cost = -T.log(self.probability).mean()
+
+        #   also define a variable for L2 regularized cost
+        self.l2_lmbd = T.fscalar('weight_decay_lambda')
+        self.cost_l2 = self.cost + self.l2_lmbd
+        for param in [self.embedding, self.w]:
+            self.cost_l2 += self.l2_lmbd * (param ** 2).sum()
 
     def params(self, symbolic=False):
         """
@@ -146,30 +157,15 @@ class LMLP():
         x_valid = theano.shared(x_valid, name='x_valid', borrow=True)
 
         #   *** Creating a function for training the net
-
-        #   first calculate CD "gradients"
-        grad_w = T.grad(self.cost, self.w)
-        grad_b_out = T.grad(self.cost, self.b_out)
-        grad_emb = T.grad(self.cost, self.embedding)
-
-        #   add regularization to gradients
-        grad_w -= weight_cost * self.w
-        grad_emb -= weight_cost * self.embedding
-
-        #   define a list of updates that happen during training
-        eps_th = T.scalar("eps", dtype=theano.config.floatX)
-        updates = [
-            (self.w, self.w - eps_th * alpha * grad_w),
-            (self.b_out, self.b_out - eps_th * alpha * grad_b_out),
-            (self.embedding, self.embedding - eps_th * (1 - alpha) * grad_emb)
-        ]
+        param_updates = grad_descent.gradient_updates_rms(
+            self.cost_l2, self.params(True).values(), eps, 0.9)
 
         #   finally construct the function that updates parameters
         index = T.iscalar()
         train_f = theano.function(
-            [index, eps_th],
+            [index, self.l2_lmbd],
             self.cost,
-            updates=updates,
+            updates=param_updates.updates,
             givens={
                 self.input: x_train[index * mnb_size: (index + 1) * mnb_size]
             }
@@ -212,7 +208,8 @@ class LMLP():
                 log.debug('Mnb %d train cost %.5f', batch_ind, cost)
                 mnb_callback(self, epoch_ind, batch_ind)
                 return cost
-            train_costs.append(np.mean(map(mnb_train, xrange(train_mnb_count))))
+            train_costs.append(
+                np.mean(map(mnb_train, xrange(train_mnb_count))))
 
             valid_costs.append(
                 np.mean(map(validate_f, range(valid_mnb_count))))

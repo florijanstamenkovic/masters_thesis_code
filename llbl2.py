@@ -2,11 +2,14 @@
 Implementation of a log-bilinear language model,
 based on (Mnih, 2008.).
 """
+import logging
+from time import time
+
 import numpy as np
 import theano
 import theano.tensor as T
-import logging
-from time import time
+
+import grad_descent
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +96,12 @@ class LLBL2():
             T.arange(input.shape[0]), input[:, 0]]
         self.cost = -T.log(self.probability).mean()
 
+        #   also define a variable for L2 regularized cost
+        self.l2_lmbd = T.fscalar('weight_decay_lambda')
+        self.cost_l2 = self.cost + self.l2_lmbd
+        for param in [self.embedding, self.w]:
+            self.cost_l2 += self.l2_lmbd * (param ** 2).sum()
+
     def params(self, symbolic=False):
         """
         Returns a dictionary of all the model parameters. The dictionary
@@ -157,30 +166,15 @@ class LLBL2():
 
         #   *** Creating a function for training the net
         #   first calculate CD "gradients"
-        grad_w = T.grad(self.cost, self.w)
-        grad_b_word = T.grad(self.cost, self.b_word)
-        grad_b_repr = T.grad(self.cost, self.b_repr)
-        grad_emb = T.grad(self.cost, self.embedding)
-
-        #   add regularization to gradients
-        grad_w -= weight_cost * self.w
-        grad_emb -= weight_cost * self.embedding
-
-        #   define a list of updates that happen during training
-        eps_th = T.scalar("eps", dtype=theano.config.floatX)
-        updates = [
-            (self.w, self.w - eps_th * alpha * grad_w),
-            (self.b_word, self.b_word - eps_th * alpha * grad_b_word),
-            (self.b_repr, self.b_repr - eps_th * alpha * grad_b_repr),
-            (self.embedding, self.embedding - eps_th * (1 - alpha) * grad_emb)
-        ]
+        param_updates = grad_descent.gradient_updates_rms(
+            self.cost_l2, self.params(True).values(), eps, 0.9)
 
         #   finally construct the function that updates parameters
         index = T.iscalar()
         train_f = theano.function(
-            [index, eps_th],
+            [index, self.l2_lmbd],
             self.cost,
-            updates=updates,
+            updates=param_updates.updates,
             givens={
                 self.input: x_train[index * mnb_size: (index + 1) * mnb_size]
             }
@@ -211,15 +205,9 @@ class LLBL2():
         for epoch_ind, epoch in enumerate(range(epochs)):
             epoch_t0 = time()
 
-            #   calc epsilon for this epoch
-            if not isinstance(eps, float):
-                epoch_eps = eps(epoch_ind, train_costs)
-            else:
-                epoch_eps = eps * (0.1 + 0.9 * 0.9 ** epoch_ind)
-
             #   iterate learning through the minibatches
             def mnb_train(batch_ind):
-                cost = train_f(batch_ind, epoch_eps)
+                cost = train_f(batch_ind, weight_cost)
                 log.debug('Mnb %d train cost %.5f', batch_ind, cost)
                 mnb_callback(self, epoch_ind, batch_ind)
                 return cost

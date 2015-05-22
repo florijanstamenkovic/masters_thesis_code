@@ -210,7 +210,7 @@ def main():
 
     log.info("Creating model")
     if use_lbl:
-        net = LLBL(n, vocab_size, d, 12345)
+        net = LLBL2(n, vocab_size, d, 12345)
     else:
         net = LMLP(n, vocab_size, d, 12345)
     net.mnb_callback = mnb_callback
