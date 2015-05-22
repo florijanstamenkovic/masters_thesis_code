@@ -10,7 +10,6 @@ import numpy as np
 import data
 # from lrbm import LRBM
 from llbl import LLBL
-from llbl2 import LLBL2
 from lmlp import LMLP
 from ngram import NgramModel
 
@@ -136,11 +135,11 @@ def main():
     x_valid_r = random_ngrams(x_valid, vocab_size, False, unigrams_dist)
 
     #   the directory for this model
-    dir = "%s_%s_%d-gram_features-%s_data-subset_%r-min_occ_%r-min_files_%r" % (
-        "llbl" if use_lbl else "lmlp",
-        "tree" if use_tree else "linear", n,
-        "".join([str(int(b)) for b in ftr_use]),
-        ts_reduction, min_occ, min_files)
+    dir = "%s_%s_%d-gram_features-%s_data-subset_%r-min_occ_%r-min_files_%r"\
+        % ("llbl" if use_lbl else "lmlp",
+            "tree" if use_tree else "linear", n,
+            "".join([str(int(b)) for b in ftr_use]),
+            ts_reduction, min_occ, min_files)
     dir = os.path.join(_DIR, dir)
     if not os.path.exists(dir):
         os.makedirs(dir)
@@ -210,7 +209,7 @@ def main():
 
     log.info("Creating model")
     if use_lbl:
-        net = LLBL2(n, vocab_size, d, 12345)
+        net = LLBL(n, vocab_size, d, 12345)
     else:
         net = LMLP(n, vocab_size, d, 12345)
     net.mnb_callback = mnb_callback
