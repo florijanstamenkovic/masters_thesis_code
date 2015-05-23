@@ -77,12 +77,11 @@ def main():
 
     Neural-net specific cmd-line flags:
         -ep EPOCHS : Number of training epochs, defaults to 20.
-        -a ALPHA : The alpha parameter of the model, defaults to 0.5
         -eps EPS : Learning rate, defaults to 0.005.
         -mnb MBN_SIZE : Size of the minibatch, defaults to 2000.
 
     """
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     log.info("Evaluating model")
 
     #   get the data handling parameters
@@ -102,7 +101,6 @@ def main():
     #   get nnet training parameters
     use_lbl = '-l' in sys.argv
     epochs = util.argv('-ep', 20, int)
-    alpha = util.argv('-a', 0.5, float)
     eps = util.argv('-eps', 0.002, float)
     mnb_size = util.argv('-mnb', 2000, int)
     n_hid = util.argv('-h', 1000, int)
@@ -145,8 +143,8 @@ def main():
         os.makedirs(dir)
 
     #   filename base for this model
-    file = "nhid-%d_d-%d_train_mnb-%d_epochs-%d_eps-%.5f_alpha-%.2f" % (
-        n_hid, d, mnb_size, epochs, eps, alpha)
+    file = "nhid-%d_d-%d_train_mnb-%d_epochs-%d_eps-%.5f" % (
+        n_hid, d, mnb_size, epochs, eps)
 
     #   store the logs
     if False:
@@ -215,7 +213,7 @@ def main():
     net.mnb_callback = mnb_callback
     net.epoch_callback = epoch_callback
     train_cost, valid_cost, _ = net.train(
-        x_train, x_valid, mnb_size, epochs, eps, alpha)
+        x_train, x_valid, mnb_size, epochs, eps)
 
     #   plot training progress info
     #   first we need values for the x-axis (minibatch count)
@@ -231,6 +229,8 @@ def main():
              label='train')
     plt.plot(mnb_count * (np.arange(epochs) + 1), valid_cost, 'g-',
              label='valid')
+    plt.axhline(min(valid_cost), linestyle='--', color='g')
+    plt.yticks(list(plt.yticks()[0]) + [min(valid_cost)])
     plt.title('cost')
     plt.grid()
     plt.legend(loc=1)
@@ -240,6 +240,8 @@ def main():
         plt.plot(x_axis_mnb, valid_set, label=name)
     plt.ylim((np.log(0.5 / vocab_size),
               max([max(v) for v in valid_ll.values()]) + 0.5))
+    plt.axhline(max(valid_ll["x_valid"]), linestyle='--', color='g')
+    plt.yticks(list(plt.yticks()[0]) + [max(valid_ll["x_valid"])])
     plt.title('log-likelihood(x)')
     plt.grid()
     plt.legend(loc=4)

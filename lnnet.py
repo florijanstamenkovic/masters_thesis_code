@@ -1,7 +1,8 @@
 """
-Implementation of a log-bilinear language model,
-based on (Mnih, 2008.).
+Implementation of feed-forward neural net for
+language modeling.
 """
+
 import logging
 
 import numpy as np
@@ -13,11 +14,16 @@ from iterative_model import IterativeModel
 log = logging.getLogger(__name__)
 
 
-class LLBL(IterativeModel):
+class LNNet(IterativeModel):
+    """
+    A neural net for language modeling. No hidden layers,
+    just input and output. Uses distributed representations
+    which are trained alongside the net.
+    """
 
     def __init__(self, n, vocab_size, repr_size, rng=None):
 
-        log.info("Creating an LLBL, n=%d, vocab_size=%r, repr_size=%r",
+        log.info("Creating an LMLP, n=%d, vocab_size=%r, repr_size=%r",
                  n, vocab_size, repr_size)
 
         #   n-gram size
@@ -37,7 +43,7 @@ class LLBL(IterativeModel):
         self.repr_size = repr_size
         self.vocab_size = vocab_size
         self.embedding = theano.shared(
-            value=numpy_rng.uniform(-0.01, 0.01, size=(
+            value=numpy_rng.uniform(-1e-3, 1e-3, size=(
                 vocab_size, repr_size)).astype(theano.config.floatX),
             name='embedding', borrow=True)
 
@@ -46,22 +52,15 @@ class LLBL(IterativeModel):
             numpy_rng.uniform(
                 low=-4 * np.sqrt(6. / (vocab_size + (n - 1) * repr_size)),
                 high=4 * np.sqrt(6. / (vocab_size + (n - 1) * repr_size)),
-                size=((n - 1) * repr_size, repr_size)
+                size=((n - 1) * repr_size, vocab_size)
             ),
             dtype=theano.config.floatX
         ), name='w', borrow=True)
 
-        #   representation biases
-        self.b_repr = theano.shared(
-            value=np.zeros(repr_size, dtype=theano.config.floatX),
-            name='b_repr',
-            borrow=True
-        )
-
-        #   word biases
-        self.b_word = theano.shared(
+        #   if hidden biases are not provided, initialize them
+        self.b_out = theano.shared(
             value=np.zeros(vocab_size, dtype=theano.config.floatX),
-            name='b_word',
+            name='b_out',
             borrow=True
         )
 
@@ -83,15 +82,9 @@ class LLBL(IterativeModel):
         input_repr = emb[input[:, 1:]].flatten(2)
         self.input_repr = input_repr
 
-        #   use linear composition of the input
-        composition = T.dot(input_repr, self.w) + self.b_repr
-        #   calculate corelation with the "output"
-        correlation = T.dot(composition, emb.T) + self.b_word
-        #   exponantiate to make it log-bilienar
-        correlation = T.exp(correlation)
+        output = T.dot(input_repr, self.w) + self.b_out
 
-        #   define probability and cost
-        self.probability = T.nnet.softmax(correlation)[
+        self.probability = T.nnet.softmax(output)[
             T.arange(input.shape[0]), input[:, 0]]
         self.cost = -T.log(self.probability).mean()
 
@@ -114,8 +107,7 @@ class LLBL(IterativeModel):
         r_val = {
             "w": self.w,
             "embedding": self.embedding,
-            "b_repr": self.b_repr,
-            "b_word": self.b_word,
+            "b_out": self.b_out,
         }
 
         if not symbolic:

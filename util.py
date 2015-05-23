@@ -132,7 +132,7 @@ def create_minibatches(x, y, size, shuffle=True):
         if high_ind >= len(x):
             break
 
-    log.info('Created %d minibatches', len(batches_x))
+    log.debug('Created %d minibatches', len(batches_x))
 
     if y is not None:
         return batches_x, batches_y
