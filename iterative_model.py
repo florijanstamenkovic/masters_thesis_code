@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 
 
 class IterativeModel():
+
     """
     Base class for language models that are trained iteratively
     using gradient descent.
@@ -76,7 +77,7 @@ class IterativeModel():
             (weight decay).
         """
 
-        log.info('Training LMLP, epochs: %d, eps: %r', epochs, eps)
+        log.info('Training iterative model`, epochs: %d, eps: %r', epochs, eps)
 
         #   pack trainset into a shared variable
         train_mnb_count = (x_train.shape[0] - 1) / mnb_size + 1
@@ -121,8 +122,8 @@ class IterativeModel():
                 log.debug('Mnb %d train cost %.5f', batch_ind, cost)
                 mnb_callback(self, epoch_ind, batch_ind)
                 return cost
-            train_costs.append(
-                np.mean(map(mnb_train, xrange(train_mnb_count))))
+            train_cost = map(mnb_train, xrange(train_mnb_count))
+            train_costs.append(float(train_cost[-1]))
 
             train_times.append(time() - epoch_t0)
             log.info('Epoch %d, duration %.2f sec, train cost: %.5f',

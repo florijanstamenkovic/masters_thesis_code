@@ -399,7 +399,7 @@ def ngrams(n, tree, tokens, invalid_tokens=None):
 
         #   sentence n-gram lengths
         sent_ngram_lens = np.maximum(
-            sent_lens - n + 1, np.zeros(sent_lens.shape))
+            sent_lens.astype('int32') - n + 1, 0)
 
         #   ranges for sentences in features, and ngrams
         def ranges(lengths):
@@ -446,10 +446,17 @@ def ngrams(n, tree, tokens, invalid_tokens=None):
             #   can't have ngrams across sentence boundaries
             for sent_ind, (sent_start, sent_end) in enumerate(sent_ranges):
 
-                #   extract the sentence from the feature
-                sent = feature[sent_start: sent_end]
                 sent_len = sent_end - sent_start
                 ngram_start, ngram_end = sent_ngram_ranges[sent_ind]
+
+                #   if sentence is shorter then n,
+                #   we can only skip it
+                if sent_len < n:
+                    assert ngram_start == ngram_end
+                    continue
+
+                #   extract the sentence from the feature
+                sent = feature[sent_start: sent_end]
 
                 #   go through terms in the ngram for current sentence
                 for term_ind in xrange(n):
