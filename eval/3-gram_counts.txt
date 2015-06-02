@@ -1,0 +1,20 @@
+
+INFO:util:Attempting to pickle data to counts_ngram/linear_features-001000_data-subset_20-min_occ_5-min_files_2/1-grams.pkl
+INFO:__main__:Ngrams additive, smoothing=1e-05: log_loss: 7.0695, perplexity: 1175.51
+INFO:__main__:Ngrams additive, smoothing=1e-04: log_loss: 6.3872, perplexity: 594.21
+INFO:__main__:Ngrams additive, smoothing=1e-03: log_loss: 5.8693, perplexity: 354.00
+INFO:__main__:Ngrams additive, smoothing=1e-02: log_loss: 5.7642, perplexity: 318.68
+INFO:__main__:Ngrams additive, smoothing=1e-01: log_loss: 6.2213, perplexity: 503.36
+INFO:__main__:Ngrams additive, smoothing=1e-02: log_loss: 5.7197, perplexity: 304.81
+INFO:__main__:Final eval of ngram model: 304.81
+INFO:__main__:Final eval on MRSCC: 0.188
+INFO:util:Succesfully loaded pickle counts_ngram/linear_features-001000_data-subset_20-min_occ_5-min_files_2/3-grams.pkl
+INFO:util:Succesfully loaded pickle counts_ngram/linear_features-001000_data-subset_20-min_occ_5-min_files_2/2-grams.pkl
+INFO:util:Succesfully loaded pickle counts_ngram/linear_features-001000_data-subset_20-min_occ_5-min_files_2/1-grams.pkl
+INFO:__main__:Ngrams knesser_ney, smoothing=4e-01: log_loss: 4.7857, perplexity: 119.79
+INFO:__main__:Ngrams knesser_ney, smoothing=8e-01: log_loss: 4.4448, perplexity: 85.18
+INFO:__main__:Ngrams knesser_ney, smoothing=9e-01: log_loss: 4.3844, perplexity: 80.19
+INFO:__main__:Ngrams knesser_ney, smoothing=1e+00: log_loss: 4.3296, perplexity: 75.92
+INFO:__main__:Ngrams knesser_ney, smoothing=1e+00: log_loss: 4.2793, perplexity: 72.19
+INFO:__main__:Final eval of ngram model: 72.19
+INFO:__main__:Final eval on MRSCC: 0.271
