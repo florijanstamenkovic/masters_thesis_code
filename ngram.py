@@ -265,7 +265,8 @@ class NgramModel():
         if n > 1:
             self.lower_order = NgramModel(
                 n - 1, use_tree, feature_use, feature_sizes, ts_reduction,
-                min_occ, min_files, lmbd, delta, trainset[:, self.feature_sizes.size:])
+                min_occ, min_files, lmbd, delta, trainset[
+                    :, self.feature_sizes.size:])
 
     def set_delta(self, delta):
         self._delta = delta
@@ -291,7 +292,8 @@ class NgramModel():
         if self.n == 1:
             normalizer = self.counts.counts_sum
         else:
-            normalizer = self.lower_order.counts.count(ngrams[:, self.feature_count:])[0]
+            normalizer = self.lower_order.counts.count(
+                ngrams[:, self.feature_count:])[0]
 
         smoother = self._lmbd * np.prod(self.feature_sizes)
         return (counts + self._lmbd) / (normalizer + smoother)
@@ -307,7 +309,8 @@ class NgramModel():
         #   when not using p_continuation, it's the plain old count
         if not _p_cont:
             base = base = counts
-            normalizer = self.lower_order.counts.count(ngrams[:, self.feature_count:])[0]
+            normalizer = self.lower_order.counts.count(
+                ngrams[:, self.feature_count:])[0]
 
         #   when using p_continuation, use the the number of preceeding
         #   words types as counts, and normalize accordingly
@@ -331,8 +334,8 @@ class NgramModel():
         #   only applicable when not doing p_continuation
         if not _p_cont:
             mask = normalizer == 0
-            assert base[mask].sum() == 0
-            assert counts_cont[mask].sum() == 0
+            # assert base[mask].sum() == 0
+            # assert counts_cont[mask].sum() == 0
             normalizer[mask] = 1
             backoff[mask] = self._delta
 

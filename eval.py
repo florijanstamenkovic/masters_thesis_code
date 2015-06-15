@@ -206,8 +206,8 @@ def main():
 
     if '-eval_ngram' in sys.argv:
         #   evaluate ngram models, additive and knesser-ney
-        ngram_lmbd = [1e-5, 1e-4, 1e-3, 1e-2, 1e-1]
-        eval_ngram(ngram_lmbd, False)
+        # ngram_lmbd = [1e-5, 1e-4, 1e-3, 1e-2, 1e-1]
+        # eval_ngram(ngram_lmbd, False)
         ngram_delta = [0.4, 0.8, 0.9, 1.0]
         eval_ngram(ngram_delta, True)
 

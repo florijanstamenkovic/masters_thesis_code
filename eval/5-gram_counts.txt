@@ -1,0 +1,21 @@
+MacBook-Pro:Programi flor385$ python eval.py -n 5 -s 20 -o 5 -f 2 -eval_ngram 
+
+INFO:__main__:Ngrams additive, smoothing=1e-05: log_loss: 8.3713, perplexity: 4321.11
+INFO:__main__:Ngrams additive, smoothing=1e-04: log_loss: 8.0452, perplexity: 3118.85
+INFO:__main__:Ngrams additive, smoothing=1e-03: log_loss: 7.8990, perplexity: 2694.69
+INFO:__main__:Ngrams additive, smoothing=1e-02: log_loss: 7.9870, perplexity: 2942.48
+INFO:__main__:Ngrams additive, smoothing=1e-01: log_loss: 8.1931, perplexity: 3615.79
+^NINFO:__main__:Ngrams additive, smoothing=1e-03: log_loss: 7.8938, perplexity: 2680.57
+INFO:__main__:Final eval of ngram model: 2680.57
+INFO:__main__:Final eval on MRSCC: 0.188
+
+
+MacBook-Pro:Programi flor385$ python -m pdb eval.py -n 5 -s 20 -o 5 -f 2 -eval_ngram 
+
+INFO:__main__:Ngrams knesser_ney, smoothing=4e-01: log_loss: 6.1438, perplexity: 465.84
+INFO:__main__:Ngrams knesser_ney, smoothing=8e-01: log_loss: 5.5229, perplexity: 250.35
+INFO:__main__:Ngrams knesser_ney, smoothing=9e-01: log_loss: 5.4171, perplexity: 225.22
+INFO:__main__:Ngrams knesser_ney, smoothing=1e+00: log_loss: 5.3224, perplexity: 204.87
+INFO:__main__:Ngrams knesser_ney, smoothing=1e+00: log_loss: inf, perplexity: inf
+INFO:__main__:Final eval of ngram model: inf
+INFO:__main__:Final eval on MRSCC: 0.239
